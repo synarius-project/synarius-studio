@@ -1,4 +1,4 @@
-from synarius_studio.app import run
+from synarius_studio.app import run #ssh
 
 
 def main() -> None:
