@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synarius-studio"
+version = "0.1.0"
+description = "PySide6 GUI for Synarius."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Synarius Contributors" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "PySide6>=6.0.0",
+]
+
+[project.scripts]
+run-synarius-studio = "synarius_studio.__main__:main"
+
+[project.urls]
+Homepage = "https://example.invalid/synarius-studio"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["synarius_studio*"]
+
+[project.optional-dependencies]
+dev = []
+
