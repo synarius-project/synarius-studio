@@ -54,3 +54,35 @@ Or module mode:
 python -m synarius_studio
 ```
 
+## Branching Strategy
+
+This repository uses a simple branching model that fits a solo-developer phase and can be tightened later without changing the overall flow.
+
+### Branch roles
+
+- `main`: stable, release-ready branch
+- `dev`: ongoing integration branch for daily development
+- `feature/*`: short-lived branches for features
+- optional short-lived branch prefixes: `fix/*`, `docs/*`, `refactor/*`
+
+### Practical rules
+
+1. Create new work branches from `dev`.
+2. Merge `feature/*` (and optional `fix/*`, `docs/*`, `refactor/*`) into `dev`.
+3. Merge `dev` into `main` when `dev` is stable and CI is green.
+4. Create release tags (`v*`) from `main` only.
+5. Direct pushes:
+   - allowed on `dev` (for now)
+   - avoided on `main` (use PR from `dev` to `main`)
+
+### GitHub branch protection (recommended)
+
+- `main`:
+  - require pull request before merge
+  - require status checks to pass
+  - approvals not required (for now)
+  - no force pushes, no branch deletion
+- `dev`:
+  - keep permissive for now (direct pushes allowed)
+  - optionally block force pushes and deletion
+
