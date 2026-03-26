@@ -6,6 +6,5 @@ Component Requirements
 
    overview
    gui
-   editor
-   visualization
+   data_viewer
 

@@ -5,13 +5,11 @@ This section contains requirements for synarius-studio subcomponents only.
 
 Studio component codes:
 
-- ``GUI`` for gui
-- ``EDITOR`` for editor
-- ``VIS`` for visualization
+- ``GUI`` for main GUI
+- ``VIEWER`` for data viewer
 
 Component requirement IDs must use:
 
 - ``STUDIO-COMP-GUI-NNN``
-- ``STUDIO-COMP-EDITOR-NNN``
-- ``STUDIO-COMP-VIS-NNN``
+- ``STUDIO-COMP-VIEWER-NNN``
 
