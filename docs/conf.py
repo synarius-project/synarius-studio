@@ -8,3 +8,5 @@ needs_types = [
     {"directive": "comp", "title": "Component Requirement", "prefix": "COMP_", "color": "#D6EAF8", "style": "node"},
 ]
 
+needs_id_regex = "^[A-Z0-9-]{5,}$"
+
