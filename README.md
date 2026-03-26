@@ -54,6 +54,11 @@ Or module mode:
 python -m synarius_studio
 ```
 
+## Documentation
+
+- Live docs: https://synarius-project.github.io/synarius-studio/
+- Docs source: https://github.com/synarius-project/synarius-studio/tree/main/docs
+
 ## Branching Strategy
 
 This repository uses a simple branching model that fits a solo-developer phase and can be tightened later without changing the overall flow.
