@@ -33,4 +33,8 @@ include = ["synarius_studio*"]
 
 [project.optional-dependencies]
 dev = []
+docs = [
+  "sphinx",
+  "sphinx-needs",
+]
 
