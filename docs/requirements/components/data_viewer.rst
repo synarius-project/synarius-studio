@@ -1,26 +1,47 @@
 Data Viewer Component Requirements
 ==================================
 
-.. comp:: The data viewer shall provide the defined main viewer layout.
+.. comp:: Data Viewer Main Layout
    :id: STUDIO-COMP-VIEWER-001
+   :status: Must
 
-.. comp:: An Adjust button should align axes to min/max values of displayed signals.
+   The data viewer GUI provides the defined main viewer layout.
+
+.. comp:: Adjust Button
    :id: STUDIO-COMP-VIEWER-002
+   :status: Should
 
-.. comp:: A Walking Axis button shall keep the time axis moving with simulation time and always show the latest window.
+   Axes are aligned to min/max values of currently displayed signals.
+
+.. comp:: Walking Axis Button
    :id: STUDIO-COMP-VIEWER-003
+   :status: Must
 
-.. comp:: A Save button should persist the currently displayed signal window.
+   The time axis follows simulation time and always shows the latest window segment.
+
+.. comp:: Save Button
    :id: STUDIO-COMP-VIEWER-004
+   :status: Should
 
-.. comp:: A Show Osci button should toggle oscilloscope visibility and indicate pressed state while visible.
+   The currently displayed signal window can be saved.
+
+.. comp:: Show Osci Button
    :id: STUDIO-COMP-VIEWER-005
+   :status: Should
 
-.. comp:: A Show DataList button should toggle data list visibility and indicate pressed state while visible.
+   The oscilloscope view can be toggled; the button remains pressed while visible.
+
+.. comp:: Show DataList Button
    :id: STUDIO-COMP-VIEWER-006
+   :status: Should
 
-.. comp:: A Slider button should toggle slider visibility and indicate pressed state while visible.
+   The data list can be toggled; the button remains pressed while visible.
+
+.. comp:: Slider Button
    :id: STUDIO-COMP-VIEWER-007
+   :status: Should
+
+   Sliders can be toggled; the button remains pressed while sliders are visible.
 
 Data Viewer Layout (reference)
 ------------------------------

@@ -1,12 +1,21 @@
 System Requirements
 ===================
 
-.. sys:: Users shall be able to create, move, select, and connect variables, operators, and modules in an interactive block-diagram canvas.
+.. sys:: Interactive Block Diagram Editor
    :id: STUDIO-SYS-001
+   :status: Must
 
-.. sys:: All CORE system-level capabilities shall be operable through Synarius Studio GUI workflows.
+   Users can create, move, select, and connect variables, operators, and modules in the canvas.
+
+.. sys:: CORE Compatibility
    :id: STUDIO-SYS-002
+   :status: Must
 
-.. sys:: Signal mapping shall be supported via drag-and-drop interaction.
+   All system-level features from CORE can be operated through Synarius Studio GUI workflows.
+
+.. sys:: Signal Mapping
    :id: STUDIO-SYS-003
+   :status: Must
+
+   Signal mapping is supported via drag-and-drop.
 

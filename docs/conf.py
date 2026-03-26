@@ -10,3 +10,18 @@ needs_types = [
 
 needs_id_regex = "^[A-Z0-9-]{5,}$"
 
+needs_default_layout = "synarius_key_title"
+needs_layouts = {
+    "synarius_key_title": {
+        "grid": "simple",
+        "layout": {
+            "head": [
+                '<<meta_id()>> **<<meta("title")>>** '
+                '<<collapse_button("meta", collapsed="icon:arrow-down-circle", visible="icon:arrow-right-circle", initial=False)>>'
+            ],
+            "meta": ['**status**: <<meta("status")>>'],
+            "footer": [],
+        },
+    }
+}
+
