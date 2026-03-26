@@ -51,6 +51,26 @@
             
   <section id="requirements">
 <h1>Requirements<a class="headerlink" href="#requirements" title="Link to this heading">¶</a></h1>
+<section id="id-policy">
+<h2>ID Policy<a class="headerlink" href="#id-policy" title="Link to this heading">¶</a></h2>
+<p>Requirement IDs follow this scheme:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;REPO&gt;-&lt;LEVEL&gt;-NNN</span></code> for system and architecture requirements</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;REPO&gt;-COMP-&lt;COMP&gt;-NNN</span></code> for component requirements</p></li>
+</ul>
+<p>Where:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">REPO</span></code> is <code class="docutils literal notranslate"><span class="pre">CORE</span></code> or <code class="docutils literal notranslate"><span class="pre">STUDIO</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">LEVEL</span></code> is <code class="docutils literal notranslate"><span class="pre">SYS</span></code> or <code class="docutils literal notranslate"><span class="pre">ARCH</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">COMP</span></code> is a repository-specific component code</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">NNN</span></code> is a zero-padded running number (for example <code class="docutils literal notranslate"><span class="pre">001</span></code>)</p></li>
+</ul>
+<p>Examples:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">STUDIO-SYS-001</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">STUDIO-ARCH-001</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">STUDIO-COMP-GUI-001</span></code></p></li>
+</ul>
 <div class="toctree-wrapper compound">
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="system.html">System Requirements</a></li>
@@ -64,6 +84,7 @@
 </li>
 </ul>
 </div>
+</section>
 </section>
 
 
@@ -94,9 +115,7 @@
 <script>document.getElementById('searchbox').style.display = "block"</script><h3>Navigation</h3>
 <ul class="current">
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Requirements</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="system.html">System Requirements</a></li>
-<li class="toctree-l2"><a class="reference internal" href="architecture.html">Architecture Requirements</a></li>
-<li class="toctree-l2"><a class="reference internal" href="components/index.html">Component Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#id-policy">ID Policy</a></li>
 </ul>
 </li>
 </ul>
