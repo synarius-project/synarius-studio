@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from pathlib import Path
 
 
 class MainWindow(QMainWindow):
@@ -37,16 +38,22 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _create_actions(self) -> None:
+        icons_dir = Path(__file__).resolve().parent / "icons"
+
         self.open_action = QAction("Open", self)
         self.save_action = QAction("Save", self)
         self.exit_action = QAction("Exit Synarius", self)
-        self.toggle_right_panel_action = QAction("Right Panel", self)
-        self.toggle_bottom_panel_action = QAction("Bottom Panel", self)
+        self.toggle_right_panel_action = QAction("", self)
+        self.toggle_bottom_panel_action = QAction("", self)
 
         self.toggle_right_panel_action.setCheckable(True)
         self.toggle_bottom_panel_action.setCheckable(True)
         self.toggle_right_panel_action.setChecked(True)
         self.toggle_bottom_panel_action.setChecked(True)
+        self.toggle_right_panel_action.setIcon(QIcon(str(icons_dir / "toggle_right_panel.svg")))
+        self.toggle_bottom_panel_action.setIcon(QIcon(str(icons_dir / "toggle_bottom_panel.svg")))
+        self.toggle_right_panel_action.setToolTip("Toggle right panel")
+        self.toggle_bottom_panel_action.setToolTip("Toggle bottom panel")
 
         self.open_action.triggered.connect(self._open_project)
         self.save_action.triggered.connect(self._save_project)
