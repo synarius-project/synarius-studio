@@ -16,10 +16,7 @@ Main GUI Component Requirements
 Main GUI Layout (reference)
 ---------------------------
 
-.. note::
-   Add the provided main GUI layout PNG to this directory and replace the placeholder filename below.
-
-.. image:: /docs/requirements/components/main_gui_layout.png
+.. image:: ../../concepts/gui/mainWindow.png
    :alt: Main GUI layout
    :width: 100%
 

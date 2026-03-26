@@ -25,10 +25,7 @@ Data Viewer Component Requirements
 Data Viewer Layout (reference)
 ------------------------------
 
-.. note::
-   Add the provided data viewer layout PNG to this directory and replace the placeholder filename below.
-
-.. image:: /docs/requirements/components/data_viewer_layout.png
+.. image:: ../../concepts/gui/Oszi.png
    :alt: Data viewer layout
    :width: 100%
 
