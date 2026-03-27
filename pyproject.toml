@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synarius-studio"
-version = "0.1.0"
+version = "0.0.7"
 description = "PySide6 GUI for Synarius."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,6 +31,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["synarius_studio*"]
+
+[tool.setuptools.package-data]
+synarius_studio = ["resources/*.syn", "diagram/svg/*.svg"]
 
 [project.optional-dependencies]
 dev = []
