@@ -2,6 +2,9 @@
 
 Graphical simulation tool with a PySide6 GUI for Synarius.
 
+## Try out!
+Download latest Windows executable: https://github.com/synarius-project/synarius-studio/releases/latest
+
 ## Vision
 
 - Synarius Studio (SN Studio) is the graphical simulation modeling and visualization environment.
