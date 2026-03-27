@@ -56,12 +56,19 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+$') {
             throw "Tag must match vX.Y.Z for WiX MSI versioning. Got: $tag"
           }
+          if (-not (Test-Path "DISCLAIMER.txt")) {
+            throw "DISCLAIMER.txt not found in repository root."
+          }
+          $disclaimerText = Get-Content -Raw "DISCLAIMER.txt"
+          $escapedText = $disclaimerText.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}').Replace("`r`n", '\par ').Replace("`n", '\par ')
+          "{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\f0\fs20 $escapedText}" | Out-File -Encoding ascii disclaimer.rtf
           @"
           <?xml version="1.0" encoding="UTF-8"?>
           <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
             <Product Id="*" Name="synarius-studio" Language="1033" Version="$version" Manufacturer="Synarius Contributors" UpgradeCode="D43DD59A-0E89-4A83-AF7A-861F0E5C8427">
               <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
               <MediaTemplate EmbedCab="yes" />
+              <WixVariable Id="WixUILicenseRtf" Value="disclaimer.rtf" />
               <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
               <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch synarius-studio" />
               <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
