@@ -1,5 +1,9 @@
+import zerovm_sphinx_theme
+
 project = "synarius-studio"
 extensions = ["sphinx_needs"]
+html_theme = "zerovm"
+html_theme_path = [zerovm_sphinx_theme.theme_path]
 
 needs_types = [
     {"directive": "need", "title": "Requirement", "prefix": "NEED_", "color": "#E8DAEF", "style": "node"},
