@@ -30,6 +30,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Set app version from release tag
+        shell: powershell
+        run: |
+          $tag = "${env:GITHUB_REF_NAME}"
+          if (-not $tag.StartsWith("v")) {
+            throw "Expected tag format vX.Y.Z, got: $tag"
+          }
+          $version = $tag.Substring(1)
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Tag must match vX.Y.Z. Got: $tag"
+          }
+          "__version__ = `"$version`"" | Out-File -Encoding utf8 src/synarius_studio/_version.py
       - run: pip install . pyinstaller
       - run: pyinstaller --noconfirm --clean --onefile --windowed --name synarius-studio --add-data "src/synarius_studio/icons;synarius_studio/icons" src/synarius_studio/__main__.py
       - run: choco install wixtoolset -y

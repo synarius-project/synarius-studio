@@ -15,12 +15,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pathlib import Path
+from ._version import __version__
 
 
 class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Synarius Studio")
+        self.setWindowTitle(f"Synarius Studio {__version__}")
         self.resize(1200, 750)
 
         central = QWidget(self)
