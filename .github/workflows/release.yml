@@ -49,7 +49,7 @@ jobs:
           <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
             <Product Id="*" Name="synarius-studio" Language="1033" Version="$version" Manufacturer="Synarius Contributors" UpgradeCode="D43DD59A-0E89-4A83-AF7A-861F0E5C8427">
               <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
-              <MediaTemplate />
+              <MediaTemplate EmbedCab="yes" />
               <Feature Id="MainFeature" Title="synarius-studio" Level="1">
                 <ComponentRef Id="MainExeComponent" />
               </Feature>
