@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import QGraphicsScene
 
 from synarius_core.model import BasicOperator, Connector, Model, Variable

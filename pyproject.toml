@@ -16,7 +16,8 @@ classifiers = [
 ]
 dependencies = [
   "PySide6>=6.0.0",
-  "synarius-core",
+  # Not published on PyPI; install from GitHub (CI, releases, pip install .).
+  "synarius-core @ git+https://github.com/synarius-project/synarius-core.git@main",
 ]
 
 [project.scripts]
