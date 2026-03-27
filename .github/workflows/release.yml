@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install . pyinstaller
-      - run: pyinstaller --noconfirm --clean --onefile --windowed --name synarius-studio src/synarius_studio/__main__.py
+      - run: pyinstaller --noconfirm --clean --onefile --windowed --name synarius-studio --add-data "src/synarius_studio/icons;synarius_studio/icons" src/synarius_studio/__main__.py
       - run: choco install wixtoolset -y
       - name: Build MSI with WiX
         shell: powershell
@@ -50,9 +50,25 @@ jobs:
             <Product Id="*" Name="synarius-studio" Language="1033" Version="$version" Manufacturer="Synarius Contributors" UpgradeCode="D43DD59A-0E89-4A83-AF7A-861F0E5C8427">
               <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
               <MediaTemplate EmbedCab="yes" />
+              <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+              <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch synarius-studio" />
+              <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
               <Feature Id="MainFeature" Title="synarius-studio" Level="1">
                 <ComponentRef Id="MainExeComponent" />
+                <ComponentRef Id="StartMenuShortcutComponent" />
               </Feature>
+              <UIRef Id="WixUI_InstallDir" />
+              <UIRef Id="WixUI_ErrorProgressText" />
+              <CustomAction Id="LaunchApplication"
+                            BinaryKey="WixCA"
+                            DllEntry="WixShellExec"
+                            Impersonate="yes" />
+              <UI>
+                <Publish Dialog="ExitDialog"
+                         Control="Finish"
+                         Event="DoAction"
+                         Value="LaunchApplication">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+              </UI>
             </Product>
             <Fragment>
               <Directory Id="TARGETDIR" Name="SourceDir">
@@ -63,12 +79,33 @@ jobs:
                     </Component>
                   </Directory>
                 </Directory>
+                <Directory Id="ProgramMenuFolder">
+                  <Directory Id="ApplicationProgramsFolder" Name="synarius-studio" />
+                </Directory>
               </Directory>
+            </Fragment>
+            <Fragment>
+              <DirectoryRef Id="ApplicationProgramsFolder">
+                <Component Id="StartMenuShortcutComponent" Guid="*">
+                  <Shortcut Id="ApplicationStartMenuShortcut"
+                            Name="synarius-studio"
+                            Description="Start synarius-studio"
+                            Target="[INSTALLFOLDER]synarius-studio.exe"
+                            WorkingDirectory="INSTALLFOLDER" />
+                  <RemoveFolder Id="ApplicationProgramsFolderRemove" On="uninstall" />
+                  <RegistryValue Root="HKCU"
+                                 Key="Software\Synarius\synarius-studio"
+                                 Name="StartMenuShortcut"
+                                 Type="integer"
+                                 Value="1"
+                                 KeyPath="yes" />
+                </Component>
+              </DirectoryRef>
             </Fragment>
           </Wix>
           "@ | Out-File -Encoding UTF8 installer.wxs
           candle.exe installer.wxs
-          light.exe installer.wixobj -o dist\synarius-studio-installer.msi
+          light.exe installer.wixobj -ext WixUIExtension -ext WixUtilExtension -o dist\synarius-studio-installer.msi
       - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-installer
