@@ -1,25 +1,36 @@
 from __future__ import annotations
 
-try:
-    from .app import run
-except ImportError:
-    # Allow direct execution of this file (python path/to/__main__.py).
-    import sys
-    from pathlib import Path
+import sys
+from pathlib import Path
 
-    studio_src = Path(__file__).resolve().parents[1]
-    repo_root = studio_src.parents[1]
-    core_src = repo_root / "synarius-core" / "src"
 
-    sys.path.append(str(studio_src))
-    if core_src.exists():
-        sys.path.append(str(core_src))
-    from synarius_studio.app import run
+def _load_run():
+    """Import ``run`` from :mod:`synarius_studio.app` for frozen, editable and dev layouts."""
+    # PyInstaller: entry script is not inside the ``synarius_studio`` package → no relative imports.
+    if getattr(sys, "frozen", False):
+        from synarius_studio.app import run
+
+        return run
+
+    try:
+        from .app import run
+    except ImportError:
+        studio_src = Path(__file__).resolve().parents[1]
+        repo_root = studio_src.parents[1]
+        core_src = repo_root / "synarius-core" / "src"
+        if str(studio_src) not in sys.path:
+            sys.path.insert(0, str(studio_src))
+        if core_src.is_dir() and str(core_src) not in sys.path:
+            sys.path.insert(0, str(core_src))
+        from synarius_studio.app import run
+
+    return run
+
 
 def main() -> None:
+    run = _load_run()
     raise SystemExit(run())
 
 
 if __name__ == "__main__":
     main()
-

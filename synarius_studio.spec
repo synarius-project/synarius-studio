@@ -24,7 +24,8 @@ datas: list[tuple[str, str]] = [(str(_icon_dir), "synarius_studio/icons")]
 binaries: list = []
 hiddenimports: list[str] = []
 
-for _pkg in ("PySide6", "shiboken6"):
+# synarius_core is a git dependency; pull the full tree (hiddenimports alone can miss files).
+for _pkg in ("synarius_core", "PySide6", "shiboken6"):
     d, b, h = collect_all(_pkg)
     datas += d
     binaries += b
@@ -33,12 +34,6 @@ for _pkg in ("PySide6", "shiboken6"):
 datas += collect_data_files("synarius_studio")
 
 hiddenimports += [
-    "synarius_core",
-    "synarius_core.controller",
-    "synarius_core.controller.minimal_controller",
-    "synarius_core.model",
-    "synarius_core.model.data_model",
-    "synarius_core.model.attribute_dict",
     "synarius_studio.diagram",
     "synarius_studio.diagram.dataflow_canvas",
     "synarius_studio.diagram.dataflow_items",
