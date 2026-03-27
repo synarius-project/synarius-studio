@@ -96,6 +96,7 @@ jobs:
                   <Directory Id="INSTALLFOLDER" Name="synarius-studio">
                     <Component Id="MainExeComponent" Guid="*">
                       <File Id="MainExeFile" Source="dist\synarius-studio.exe" KeyPath="yes" />
+                      <File Id="BundledTestSyn" Source="src\synarius_studio\resources\test.syn" />
                     </Component>
                   </Directory>
                 </Directory>

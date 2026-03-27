@@ -5,8 +5,10 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QKeyEvent, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsScene,
     QLabel,
     QMainWindow,
     QSizePolicy,
@@ -20,6 +22,10 @@ from PySide6.QtWidgets import (
 from pathlib import Path
 from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
+
+from .diagram import DataflowGraphicsView, populate_scene_from_model
+from .diagram.dataflow_canvas import CANVAS_BACKGROUND_COLOR, SCROLLBAR_STYLE_QSS
+from .diagram.dataflow_layout import SCENE_RECT, open_syn_dialog_start_dir
 
 DEFAULT_OUTPUT_COLOR = "#ADD8E6"  # light blue
 DEFAULT_PROMPT_COLOR = "#90EE90"  # light green
@@ -139,10 +145,13 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(8, 8, 8, 8)
         root_layout.setSpacing(8)
 
+        self._diagram_scene = QGraphicsScene(self)
+        self._diagram_scene.setSceneRect(SCENE_RECT)
+
         self._create_actions()
         self._create_menu()
-        self._create_toolbar()
         self._build_main_layout(root_layout)
+        self._create_toolbar()
 
         self.setStatusBar(self.statusBar())
         self.statusBar().showMessage("Ready.")
@@ -185,6 +194,22 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.open_action)
         toolbar.addAction(self.save_action)
 
+        toolbar.addSeparator()
+        toolbar.addWidget(QLabel("Zoom:", self))
+        self._zoom_combo = QComboBox(self)
+        self._zoom_combo.setEditable(True)
+        self._zoom_combo.setMinimumWidth(88)
+        for z in ("60%", "80%", "100%", "120%", "140%"):
+            self._zoom_combo.addItem(z)
+        self._zoom_combo.setCurrentText("100%")
+        zoom_le = self._zoom_combo.lineEdit()
+        if zoom_le is not None:
+            zoom_le.setPlaceholderText("100%")
+            zoom_le.returnPressed.connect(self._on_zoom_combo_return)
+        toolbar.addWidget(self._zoom_combo)
+        self._zoom_combo.activated.connect(self._on_zoom_combo_activated)
+        self._dataflow_view.zoom_percent_changed.connect(self._sync_zoom_combo_from_view)
+
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
@@ -192,6 +217,36 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.toggle_bottom_panel_action)
 
         self.addToolBar(toolbar)
+
+    @staticmethod
+    def _parse_zoom_percent_text(text: str) -> float | None:
+        t = text.strip().upper().replace("%", "").strip()
+        try:
+            v = float(t.replace(",", "."))
+        except ValueError:
+            return None
+        if 5.0 <= v <= 500.0:
+            return v
+        return None
+
+    def _on_zoom_combo_activated(self, index: int) -> None:
+        if index < 0:
+            return
+        pct = self._parse_zoom_percent_text(self._zoom_combo.itemText(index))
+        if pct is not None:
+            self._dataflow_view.set_zoom_percent(pct)
+
+    def _on_zoom_combo_return(self) -> None:
+        pct = self._parse_zoom_percent_text(self._zoom_combo.currentText())
+        if pct is not None:
+            self._dataflow_view.set_zoom_percent(pct)
+        else:
+            self._sync_zoom_combo_from_view(self._dataflow_view.zoom_percent())
+
+    def _sync_zoom_combo_from_view(self, percent: float) -> None:
+        self._zoom_combo.blockSignals(True)
+        self._zoom_combo.setCurrentText(f"{int(round(percent))}%")
+        self._zoom_combo.blockSignals(False)
 
     def _build_main_layout(self, root_layout: QVBoxLayout) -> None:
         left_tabs = QTabWidget(self)
@@ -201,8 +256,12 @@ class MainWindow(QMainWindow):
 
         canvas = QFrame(self)
         canvas.setFrameShape(QFrame.Shape.StyledPanel)
-        canvas.setStyleSheet("background-color: #b8b5a9;")
+        canvas.setStyleSheet(f"background-color: {CANVAS_BACKGROUND_COLOR};")
         canvas.setMinimumWidth(260)
+        canvas_layout = QVBoxLayout(canvas)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        self._dataflow_view = DataflowGraphicsView(self._diagram_scene, canvas)
+        canvas_layout.addWidget(self._dataflow_view)
 
         self.right_tabs = QTabWidget(self)
         self.right_tabs.setTabPosition(QTabWidget.TabPosition.West)
@@ -233,6 +292,9 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.horizontal_split, 1)
 
+    def _refresh_diagram(self) -> None:
+        populate_scene_from_model(self._diagram_scene, self._controller.model)
+
     def _panel_label(self, text: str) -> QWidget:
         widget = QWidget(self)
         layout = QVBoxLayout(widget)
@@ -248,7 +310,9 @@ class MainWindow(QMainWindow):
 
         self.console = _TerminalConsole(self._on_console_enter, self._history_prev, self._history_next, widget)
         self.console.setStyleSheet(
-            "QTextEdit { background-color: #2f2f2f; color: #e0e0e0; font-family: Consolas, 'Courier New', monospace; }"
+            "QTextEdit { background-color: #2f2f2f; color: #e0e0e0; "
+            "font-family: Consolas, 'Courier New', monospace; }\n"
+            + SCROLLBAR_STYLE_QSS
         )
         layout.addWidget(self.console, 1)
 
@@ -310,6 +374,8 @@ class MainWindow(QMainWindow):
 
         if result is not None and result != "":
             self._append_console_line(result, self._get_output_color())
+        if stripped.lower().startswith("load "):
+            self._refresh_diagram()
         self._show_prompt()
 
     def _history_prev(self) -> None:
@@ -324,7 +390,7 @@ class MainWindow(QMainWindow):
         file_name, _ = QFileDialog.getOpenFileName(
             self,
             "Open Synarius Project",
-            "",
+            str(open_syn_dialog_start_dir()),
             "Synarius Project (*.syn *.json *.yaml);;All Files (*)",
         )
         if file_name:
@@ -335,6 +401,7 @@ class MainWindow(QMainWindow):
                 result = self._controller.execute(f'load "{file_name}"')
                 if result:
                     self._append_console_line(result, self._get_output_color())
+                self._refresh_diagram()
             except Exception as exc:
                 self._append_console_line(f"error: {exc}", ERROR_COLOR)
             self._show_prompt()
@@ -345,7 +412,7 @@ class MainWindow(QMainWindow):
         file_name, _ = QFileDialog.getSaveFileName(
             self,
             "Save Synarius Project",
-            "",
+            str(open_syn_dialog_start_dir()),
             "Synarius Project (*.syn *.json *.yaml);;All Files (*)",
         )
         if file_name:

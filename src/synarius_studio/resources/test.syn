@@ -3,11 +3,9 @@
 #                    two inputs into first '*', result into bottom of second '*';
 #                    final result in v_out.
 #
-# Diagram screen positions for this naming scheme are defined in Synarius Studio
-# (synarius_studio.diagram.dataflow_layout._POSITIONS) so pins line up on straight
-# runs; keep names here in sync when you duplicate this sample.
-#
-# vtx_b and vtx_d sit clearly below vtx_a / vtx_c respectively (lower branch of each pair).
+# Diagram layout (see synarius_studio.diagram.dataflow_layout._BASE_POSITIONS):
+#   Left column: vtx_a, vtx_b (close), gap, vtx_c, vtx_d (close).
+#   Columns: inputs -> op_add / op_mul_a -> v_sum / v_prod -> op_mul_b -> v_out.
 
 # --- Inputs (external sources, like the leftmost variable blocks in the diagram) ---
 new Variable vtx_a

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QFontMetricsF,
     QPainter,
@@ -20,6 +21,8 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsRectItem,
+    QGraphicsSceneHoverEvent,
+    QGraphicsSceneMouseEvent,
     QGraphicsSimpleTextItem,
     QStyleOptionGraphicsItem,
     QWidget,
@@ -81,6 +84,27 @@ class _MovableSnapRectMixin:
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             _refresh_connectors_touching(self)
         return result
+
+    def hoverEnterEvent(self, event: QGraphicsSceneHoverEvent) -> None:
+        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
+        self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.isUnderMouse():
+                self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+            else:
+                self.unsetCursor()
 
 
 def _block_outline_pen(color: QColor) -> QPen:
@@ -344,8 +368,10 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
 
         self._label = QGraphicsSimpleTextItem(variable.name, self)
+        self._label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._label.setBrush(QColor(30, 30, 30))
         self._label.setZValue(2.0)
         self._label.setFont(_font_for_variable_name(variable.name, VARIABLE_WIDTH, VARIABLE_HEIGHT))
@@ -386,6 +412,7 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
 
         self._glyph = _OperatorGlyphItem(operator.operation, SVG_SYMBOL_SIZE, self)
         self._glyph.setPos(

@@ -6,8 +6,8 @@ from PySide6.QtCore import QEvent, Signal, Qt
 from PySide6.QtGui import QColor, QCursor, QEnterEvent, QMouseEvent, QPainter, QWheelEvent
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
-# Very light, low-saturation warm canvas (pale cream).
-CANVAS_BACKGROUND_COLOR = "#fefcf5"
+# Light yellow canvas (frame + scene); single source of truth for diagram area color.
+CANVAS_BACKGROUND_COLOR = "#fff9c4"
 
 # Shared with console so diagram and terminal use identical scrollbar chrome (Qt style sheet).
 SCROLLBAR_STYLE_QSS = """
