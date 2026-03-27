@@ -75,6 +75,7 @@ jobs:
               <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
               <Feature Id="MainFeature" Title="synarius-studio" Level="1">
                 <ComponentRef Id="MainExeComponent" />
+                <ComponentRef Id="BundledSampleSynComponent" />
                 <ComponentRef Id="StartMenuShortcutComponent" />
               </Feature>
               <UIRef Id="WixUI_InstallDir" />
@@ -96,7 +97,9 @@ jobs:
                   <Directory Id="INSTALLFOLDER" Name="synarius-studio">
                     <Component Id="MainExeComponent" Guid="*">
                       <File Id="MainExeFile" Source="dist\synarius-studio.exe" KeyPath="yes" />
-                      <File Id="BundledTestSyn" Source="src\synarius_studio\resources\test.syn" />
+                    </Component>
+                    <Component Id="BundledSampleSynComponent" Guid="*">
+                      <File Id="BundledTestSyn" Source="src\synarius_studio\resources\test.syn" KeyPath="yes" />
                     </Component>
                   </Directory>
                 </Directory>
