@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass, field
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QColor, QIcon, QKeyEvent, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -10,12 +12,117 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QTabWidget,
+    QTextEdit,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 from pathlib import Path
 from ._version import __version__
+from synarius_core.controller import CommandError, MinimalController
+
+DEFAULT_OUTPUT_COLOR = "#ADD8E6"  # light blue
+DEFAULT_PROMPT_COLOR = "#90EE90"  # light green
+DEFAULT_INPUT_COLOR = "#FFFFFF"  # terminal-like user input
+ERROR_COLOR = "#FF6666"
+
+
+@dataclass
+class _History:
+    entries: list[str] = field(default_factory=list)
+    index: int = 0
+
+    def push(self, line: str) -> None:
+        if line.strip() == "":
+            return
+        self.entries.append(line)
+        self.index = len(self.entries)
+
+    def prev(self) -> str | None:
+        if not self.entries:
+            return None
+        self.index = max(0, self.index - 1)
+        return self.entries[self.index]
+
+    def next(self) -> str:
+        if not self.entries:
+            return ""
+        self.index = min(len(self.entries), self.index + 1)
+        if self.index >= len(self.entries):
+            return ""
+        return self.entries[self.index]
+
+
+class _TerminalConsole(QTextEdit):
+    def __init__(self, on_submit, on_prev, on_next, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._on_submit = on_submit
+        self._on_prev = on_prev
+        self._on_next = on_next
+        self._input_start = 0
+        self.setAcceptRichText(False)
+
+    def _insert_colored(self, text: str, color: str) -> None:
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.mergeCharFormat(fmt)
+        cursor.insertText(text)
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
+    def append_output(self, text: str, color: str) -> None:
+        self._insert_colored(f"{text}\n", color)
+
+    def show_prompt(self, prompt: str, color: str) -> None:
+        self._insert_colored(prompt, color)
+        self._input_start = self.textCursor().position()
+        # Keep user-typed command text white, matching terminal UX.
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(DEFAULT_INPUT_COLOR))
+        self.setCurrentCharFormat(fmt)
+
+    def current_input(self) -> str:
+        return self.toPlainText()[self._input_start :]
+
+    def replace_current_input(self, text: str) -> None:
+        cursor = self.textCursor()
+        cursor.setPosition(self._input_start)
+        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertText(text)
+        self.setTextCursor(cursor)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        key = event.key()
+        cursor = self.textCursor()
+
+        if key == Qt.Key.Key_Up:
+            self._on_prev()
+            return
+        if key == Qt.Key.Key_Down:
+            self._on_next()
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            line = self.current_input()
+            self._insert_colored("\n", DEFAULT_OUTPUT_COLOR)
+            self._on_submit(line)
+            return
+        if key == Qt.Key.Key_Backspace and cursor.position() <= self._input_start:
+            return
+        if key == Qt.Key.Key_Left and cursor.position() <= self._input_start:
+            return
+        if key == Qt.Key.Key_Home:
+            cursor.setPosition(self._input_start)
+            self.setTextCursor(cursor)
+            return
+        if cursor.position() < self._input_start:
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.setTextCursor(cursor)
+
+        super().keyPressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -23,6 +130,9 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(f"Synarius Studio {__version__}")
         self.resize(1200, 750)
+        self._controller = MinimalController()
+        self._history = _History()
+        self._default_output_color = DEFAULT_OUTPUT_COLOR
 
         central = QWidget(self)
         root_layout = QVBoxLayout(central)
@@ -100,7 +210,7 @@ class MainWindow(QMainWindow):
         self.right_tabs.setMinimumWidth(140)
 
         self.bottom_tabs = QTabWidget(self)
-        self.bottom_tabs.addTab(self._panel_label("Console / Logging"), "Console")
+        self.bottom_tabs.addTab(self._build_console_panel(), "Console")
         self.bottom_tabs.setMinimumHeight(100)
 
         self.center_split = QSplitter(self)
@@ -130,6 +240,86 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return widget
 
+    def _build_console_panel(self) -> QWidget:
+        widget = QWidget(self)
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self.console = _TerminalConsole(self._on_console_enter, self._history_prev, self._history_next, widget)
+        self.console.setStyleSheet(
+            "QTextEdit { background-color: #2f2f2f; color: #e0e0e0; font-family: Consolas, 'Courier New', monospace; }"
+        )
+        layout.addWidget(self.console, 1)
+
+        self._append_console_line("synarius-core minimal CLI", self._get_output_color())
+        self._append_console_line("Type 'help' for commands, 'exit' to quit.", self._get_output_color())
+        self._show_prompt()
+        return widget
+
+    def _get_output_color(self) -> str:
+        try:
+            value = self._controller.model.root.get("output_color")
+            if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+                return value
+        except Exception:
+            pass
+        return self._default_output_color
+
+    def _show_prompt(self) -> None:
+        prompt = str(self._controller.current.get("prompt_path"))
+        self.console.show_prompt(f"{prompt}> ", DEFAULT_PROMPT_COLOR)
+
+    def _append_console_line(self, text: str, color: str) -> None:
+        self.console.append_output(text, color)
+
+    def _on_console_enter(self, line: str) -> None:
+        stripped = line.strip()
+        if stripped == "":
+            self._show_prompt()
+            return
+        self._history.push(line)
+
+        if stripped in {"exit", "quit"}:
+            self.close()
+            return
+        if stripped == "help":
+            self._append_console_line("Built-in commands:", self._get_output_color())
+            self._append_console_line("  help                    Show this help", self._get_output_color())
+            self._append_console_line("  exit | quit             Exit CLI", self._get_output_color())
+            self._append_console_line("  load <file.syn>         Load command-stack script", self._get_output_color())
+            self._append_console_line("", self._get_output_color())
+            self._append_console_line("Protocol commands:", self._get_output_color())
+            self._append_console_line(
+                "  ls, lsattr [-l], cd <path>, new ..., select ..., set ..., get ..., del ...",
+                self._get_output_color(),
+            )
+            self._show_prompt()
+            return
+
+        try:
+            result = self._controller.execute(stripped)
+        except CommandError as exc:
+            self._append_console_line(f"error: {exc}", ERROR_COLOR)
+            self._show_prompt()
+            return
+        except Exception as exc:
+            self._append_console_line(f"error: {exc}", ERROR_COLOR)
+            self._show_prompt()
+            return
+
+        if result is not None and result != "":
+            self._append_console_line(result, self._get_output_color())
+        self._show_prompt()
+
+    def _history_prev(self) -> None:
+        prev_line = self._history.prev()
+        if prev_line is not None:
+            self.console.replace_current_input(prev_line)
+
+    def _history_next(self) -> None:
+        self.console.replace_current_input(self._history.next())
+
     def _open_project(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
             self,
@@ -139,6 +329,15 @@ class MainWindow(QMainWindow):
         )
         if file_name:
             self.statusBar().showMessage(f"Opened: {file_name}")
+            prompt = str(self._controller.current.get("prompt_path"))
+            self._append_console_line(f'{prompt}> load "{file_name}"', DEFAULT_PROMPT_COLOR)
+            try:
+                result = self._controller.execute(f'load "{file_name}"')
+                if result:
+                    self._append_console_line(result, self._get_output_color())
+            except Exception as exc:
+                self._append_console_line(f"error: {exc}", ERROR_COLOR)
+            self._show_prompt()
         else:
             self.statusBar().showMessage("Open canceled")
 
