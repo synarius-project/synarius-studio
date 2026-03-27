@@ -43,7 +43,8 @@ jobs:
           }
           "__version__ = `"$version`"" | Out-File -Encoding utf8 src/synarius_studio/_version.py
       - run: pip install . pyinstaller
-      - run: pyinstaller --noconfirm --clean --onefile --windowed --name synarius-studio --add-data "src/synarius_studio/icons;synarius_studio/icons" src/synarius_studio/__main__.py
+      - name: PyInstaller (one-file, Qt plugins + package data)
+        run: pyinstaller --noconfirm --clean synarius_studio.spec
       - run: choco install wixtoolset -y
       - name: Build MSI with WiX
         shell: powershell
