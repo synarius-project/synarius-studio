@@ -1,0 +1,170 @@
+@startuml GraphicalElementsModel
+skinparam classAttributeIconSize 0
+title UML — Data-flow graph view (zoomable canvas)
+
+package "Domain (synarius-core data model)" #LightYellow {
+  class BaseObject <<domain>> {
+    +id: UUID
+    +name: String
+  }
+  class ElementaryInstance <<domain>> {
+    +in_pins: Pin[*]
+    +out_pins: Pin[*]
+  }
+  class Variable <<domain>>
+  class BasicOperator <<domain>>
+  class Connector <<domain>> {
+    +source_instance_id: UUID
+    +target_instance_id: UUID
+    +source_pin: String
+    +target_pin: String
+  }
+  BaseObject <|-- ElementaryInstance
+  ElementaryInstance <|-- Variable
+  ElementaryInstance <|-- BasicOperator
+  BaseObject <|-- Connector
+}
+
+package "Geometry (value types)" #White {
+  class Point2D <<value>> {
+    +x: float
+    +y: float
+  }
+  class Rect <<value>> {
+    +x: float
+    +y: float
+    +width: float
+    +height: float
+  }
+}
+
+package "Editor — zoomable canvas" #Wheat {
+
+  class ZoomableDiagramView {
+    +zoom_level: float
+    +pan_offset: Point2D
+    +fit_content()
+    +apply_zoom(delta: float, focus: Point2D)
+    --
+    Viewport that renders a diagram surface; user can zoom
+    (wheel, buttons, gestures) and pan; maps view coordinates
+    to surface coordinates.
+  }
+
+  class DiagramSurface {
+    +surface_id: UUID
+    +clear()
+    +rebuild_from(GraphDiagram)
+    --
+    Holds all drawable elements for one diagram page:
+    block nodes, port handles, and connection edges.
+  }
+
+  ZoomableDiagramView *-- "1" DiagramSurface : displays
+}
+
+package "Editor — graph elements" #HoneyDew {
+
+  abstract class GraphBlockNode {
+    +domain_object_id: UUID <<optional>>
+    +element_id: UUID
+    +stack_order: float
+    +bounds: Rect
+    --
+    Base for on-canvas node visuals (label, child ports).
+  }
+
+  class VariableBlockNode {
+    +label_style: LabelStyle
+    --
+    Wide rectangle; maps to Variable.
+  }
+
+  class OperatorBlockNode {
+    +glyph: OperatorGlyph
+    --
+    Square block; maps to BasicOperator.
+  }
+
+  class PortHandle {
+    +logical_pin_name: String
+    +anchor: PortAnchor
+    +offset: Point2D
+    --
+    Anchor for edges; aligns with Connector pin names.
+  }
+
+  class ConnectionEdge {
+    +connector_id: UUID
+    +routing: EdgeRouting
+    +waypoints: Point2D[*]
+    --
+    Polyline or path; maps to Connector.
+  }
+
+  enum OperatorGlyph {
+    PLUS
+    MULTIPLY
+    MINUS
+    DIVIDE
+  }
+
+  enum PortAnchor {
+    NORTH
+    SOUTH
+    EAST
+    WEST
+    CENTER
+  }
+
+  enum EdgeRouting {
+    ORTHOGONAL
+    BEZIER
+    STRAIGHT
+  }
+
+  enum LabelStyle {
+    NAME_ONLY
+    NAME_AND_VALUE
+  }
+}
+
+class GraphDiagram {
+  +diagram_id: UUID
+  +name: String
+  --
+  Logical diagram aggregate; drives rebuild of
+  DiagramSurface (nodes and edges).
+}
+
+DiagramSurface *-- "*" GraphBlockNode : contains
+DiagramSurface *-- "*" ConnectionEdge : contains
+GraphDiagram ..> DiagramSurface : sync / rebuild
+
+GraphBlockNode <|-- VariableBlockNode
+GraphBlockNode <|-- OperatorBlockNode
+GraphBlockNode *-- "1..*" PortHandle : ports
+
+GraphBlockNode ..> BaseObject : <<view→domain optional>>
+ConnectionEdge ..> Connector : <<connector_id>>
+VariableBlockNode ..> Variable : <<typical 1:1>>
+OperatorBlockNode ..> BasicOperator : <<typical 1:1>>
+
+note bottom of ZoomableDiagramView
+  **Zoomable canvas:** Scaling keeps a stable surface
+  coordinate system; the view applies a transform so the
+  user can zoom and pan without changing domain semantics.
+end note
+
+note bottom of DiagramSurface
+  **Populated surface:** Building the graph instantiates
+  block nodes, port handles, and connection edges and
+  registers them on the surface for hit-testing and drawing.
+end note
+
+note right of PortHandle
+  **Multiple inputs:** Binary operators use distinct
+  logical_pin_name values (e.g. in1, in2) or NORTH/SOUTH anchors.
+end note
+
+@enduml

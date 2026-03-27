@@ -1,0 +1,43 @@
+# Dataflow graph: (vtx_a + vtx_b) * (vtx_c * vtx_d) -> v_out
+# Structure matches: two inputs into '+', result into first '*';
+#                    two inputs into first '*', result into bottom of second '*';
+#                    final result in v_out.
+#
+# Diagram screen positions for this naming scheme are defined in Synarius Studio
+# (synarius_studio.diagram.dataflow_layout._POSITIONS) so pins line up on straight
+# runs; keep names here in sync when you duplicate this sample.
+#
+# vtx_b and vtx_d sit clearly below vtx_a / vtx_c respectively (lower branch of each pair).
+
+# --- Inputs (external sources, like the leftmost variable blocks in the diagram) ---
+new Variable vtx_a
+new Variable vtx_b
+new Variable vtx_c
+new Variable vtx_d
+
+# --- Intermediate carriers (sum branch, product branch) ---
+new Variable v_sum
+new Variable v_prod
+
+# --- Final output ---
+new Variable v_out
+
+# --- Operators: one add, two multiplies (second multiply merges the two branches) ---
+new BasicOperator + name=op_add
+new BasicOperator * name=op_mul_a
+new BasicOperator * name=op_mul_b
+
+# Top branch: vtx_a, vtx_b -> op_add -> v_sum
+new Connector vtx_a op_add source_pin=out target_pin=in1
+new Connector vtx_b op_add source_pin=out target_pin=in2
+new Connector op_add v_sum source_pin=out target_pin=in
+
+# Bottom branch: vtx_c, vtx_d -> op_mul_a -> v_prod
+new Connector vtx_c op_mul_a source_pin=out target_pin=in1
+new Connector vtx_d op_mul_a source_pin=out target_pin=in2
+new Connector op_mul_a v_prod source_pin=out target_pin=in
+
+# Merge: v_sum * v_prod -> v_out
+new Connector v_sum op_mul_b source_pin=out target_pin=in1
+new Connector v_prod op_mul_b source_pin=out target_pin=in2
+new Connector op_mul_b v_out source_pin=out target_pin=in
