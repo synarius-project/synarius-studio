@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.model import BasicOperator, BasicOperatorType, Variable
+from synarius_core.model import BasicOperator, BasicOperatorType, Connector, Variable
 
 if TYPE_CHECKING:
     pass
@@ -413,6 +413,10 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._pin_out = _OutputPinItem(self)
         self._pin_out.setPos(VARIABLE_WIDTH, cy)
 
+    def controller_select_token(self) -> str:
+        """Token for ``select`` in the Controller Command Protocol (unique ``hash_name``)."""
+        return self._variable.hash_name
+
     def paint(
         self,
         painter: QPainter,
@@ -462,15 +466,18 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
             (OPERATOR_SIZE - SVG_SYMBOL_SIZE) / 2,
         )
 
-        # Pins on half-module grid (OPERATOR_SIZE = 3·MODULE): y = M, 2M, 1.5M for straight stubs.
+        # Pins: inputs ±0.5·M from former M / 2M so they sit nearer top/bottom; out stays at 1.5M (center).
         self._pin_in1 = _InputPinItem(self)
-        self._pin_in1.setPos(0.0, MODULE)
+        self._pin_in1.setPos(0.0, 0.5 * MODULE)
         self._pin_in2 = _InputPinItem(self)
-        self._pin_in2.setPos(0.0, 2.0 * MODULE)
+        self._pin_in2.setPos(0.0, 2.5 * MODULE)
         self._pin_out = _OutputPinItem(self)
         self._pin_out.setPos(OPERATOR_SIZE, 1.5 * MODULE)
 
         _apply_light_diagonal_shadow(self)
+
+    def controller_select_token(self) -> str:
+        return self._operator.hash_name
 
     def paint(
         self,
@@ -595,10 +602,24 @@ class ConnectorEdgeItem(QGraphicsObject):
         self._pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self.setZValue(-10.0)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self._connector: Connector | None = None
         self._att_src: QGraphicsItem | None = None
         self._att_dst: QGraphicsItem | None = None
         self._att_src_pin: str = ""
         self._att_dst_pin: str = ""
+
+    def set_domain_connector(self, connector: Connector) -> None:
+        """Bind the scene edge to the core ``Connector`` (for ``select`` tokens)."""
+        self._connector = connector
+
+    @property
+    def domain_connector(self) -> Connector | None:
+        return self._connector
+
+    def controller_select_token(self) -> str | None:
+        if self._connector is None:
+            return None
+        return self._connector.hash_name
 
     def attach_blocks(
         self,

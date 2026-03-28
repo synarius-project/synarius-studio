@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
+from uuid import UUID
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QKeyEvent, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsItem,
     QGraphicsScene,
     QLabel,
     QMainWindow,
@@ -24,6 +27,7 @@ from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
 
 from .diagram import DataflowGraphicsView, populate_scene_from_model
+from .diagram.dataflow_items import UI_SCALE, ConnectorEdgeItem, OperatorBlockItem, VariableBlockItem
 from .diagram.dataflow_canvas import CANVAS_BACKGROUND_COLOR, SCROLLBAR_STYLE_QSS
 from .diagram.dataflow_layout import SCENE_RECT, open_syn_dialog_start_dir
 
@@ -66,6 +70,7 @@ class _TerminalConsole(QTextEdit):
         self._on_prev = on_prev
         self._on_next = on_next
         self._input_start = 0
+        self._prompt_line_start = 0
         self.setAcceptRichText(False)
 
     def _insert_colored(self, text: str, color: str) -> None:
@@ -83,12 +88,33 @@ class _TerminalConsole(QTextEdit):
         self._insert_colored(f"{text}\n", color)
 
     def show_prompt(self, prompt: str, color: str) -> None:
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+        self._prompt_line_start = cursor.position()
         self._insert_colored(prompt, color)
         self._input_start = self.textCursor().position()
         # Keep user-typed command text white, matching terminal UX.
         fmt = QTextCharFormat()
         fmt.setForeground(QColor(DEFAULT_INPUT_COLOR))
         self.setCurrentCharFormat(fmt)
+
+    def insert_log_before_current_prompt(self, text: str, color: str) -> None:
+        """Insert a protocol echo line above the active prompt without breaking in-progress input."""
+        cursor = QTextCursor(self.document())
+        cursor.beginEditBlock()
+        cursor.setPosition(self._prompt_line_start)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(f"{text}\n")
+        cursor.endEditBlock()
+        delta = len(text) + 1
+        self._prompt_line_start += delta
+        self._input_start += delta
+        end = self.textCursor()
+        end.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(end)
 
     def current_input(self) -> str:
         return self.toPlainText()[self._input_start :]
@@ -147,10 +173,15 @@ class MainWindow(QMainWindow):
 
         self._diagram_scene = QGraphicsScene(self)
         self._diagram_scene.setSceneRect(SCENE_RECT)
+        # Strong refs to scene wrappers from ``items()``; PySide6 may drop items when these go away.
+        self._diagram_item_refs: list[QGraphicsItem] = []
 
         self._create_actions()
         self._create_menu()
         self._build_main_layout(root_layout)
+        self._dataflow_view.scene_left_release.connect(self._sync_scene_selection_to_controller)
+        self._dataflow_view.block_move_finished.connect(self._sync_diagram_move_to_controller)
+        self._dataflow_view.delete_selection_requested.connect(self._delete_selected_via_controller)
         self._create_toolbar()
 
         self.setStatusBar(self.statusBar())
@@ -294,6 +325,131 @@ class MainWindow(QMainWindow):
 
     def _refresh_diagram(self) -> None:
         populate_scene_from_model(self._diagram_scene, self._controller.model)
+        self._diagram_item_refs = list(self._diagram_scene.items())
+
+    @staticmethod
+    def _graphics_item_model_id(item: QGraphicsItem) -> UUID | None:
+        if isinstance(item, VariableBlockItem):
+            return item.variable().id
+        if isinstance(item, OperatorBlockItem):
+            return item.operator().id
+        if isinstance(item, ConnectorEdgeItem):
+            c = item.domain_connector
+            return c.id if c is not None else None
+        return None
+
+    def _apply_controller_selection_to_scene(self) -> None:
+        """Highlight scene items that match ``controller.selection`` (e.g. after console ``select``)."""
+        desired: set[UUID] = {obj.id for obj in self._controller.selection if obj.id is not None}
+        scene = self._diagram_scene
+        scene.clearSelection()
+        for it in self._diagram_item_refs:
+            if it.parentItem() is not None:
+                continue
+            oid = self._graphics_item_model_id(it)
+            if oid is None:
+                continue
+            it.setSelected(oid in desired)
+
+    @staticmethod
+    def _console_command_needs_diagram_rebuild(line: str) -> bool:
+        s = line.strip().lower()
+        return s.startswith("load ") or s.startswith("new ") or s.startswith("del ")
+
+    def _sync_diagram_view_from_core_after_console(self, command_line: str) -> None:
+        """Keep canvas aligned with core model and controller selection after a console command."""
+        if self._console_command_needs_diagram_rebuild(command_line):
+            self._refresh_diagram()
+        self._apply_controller_selection_to_scene()
+
+    @staticmethod
+    def _controller_select_tokens_from_items(items: list[QGraphicsItem]) -> list[str]:
+        tokens: list[str] = []
+        for it in items:
+            if isinstance(it, (VariableBlockItem, OperatorBlockItem)):
+                tokens.append(it.controller_select_token())
+            elif isinstance(it, ConnectorEdgeItem):
+                t = it.controller_select_token()
+                if t is not None:
+                    tokens.append(t)
+        return sorted(set(tokens))
+
+    def _sync_scene_selection_to_controller(self) -> None:
+        selected = self._diagram_scene.selectedItems()
+        tokens = self._controller_select_tokens_from_items(selected)
+        if tokens:
+            cmd = "select " + " ".join(shlex.quote(t) for t in tokens)
+        else:
+            cmd = "select"
+        prompt = str(self._controller.current.get("prompt_path"))
+        self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
+        try:
+            result = self._controller.execute(cmd)
+        except CommandError as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        except Exception as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        if result is not None and result != "":
+            self.console.insert_log_before_current_prompt(result, self._get_output_color())
+        self._sync_diagram_view_from_core_after_console(cmd)
+
+    def _delete_selected_via_controller(self) -> None:
+        selected = self._diagram_scene.selectedItems()
+        tokens = self._controller_select_tokens_from_items(selected)
+        if not tokens:
+            return
+        prompt = str(self._controller.current.get("prompt_path"))
+        select_cmd = "select " + " ".join(shlex.quote(t) for t in tokens)
+        del_cmd = "del @selected"
+        self.console.insert_log_before_current_prompt(f"{prompt}> {select_cmd}", DEFAULT_PROMPT_COLOR)
+        try:
+            sel_result = self._controller.execute(select_cmd)
+        except CommandError as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        except Exception as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        if sel_result is not None and sel_result != "":
+            self.console.insert_log_before_current_prompt(sel_result, self._get_output_color())
+
+        self.console.insert_log_before_current_prompt(f"{prompt}> {del_cmd}", DEFAULT_PROMPT_COLOR)
+        try:
+            result = self._controller.execute(del_cmd)
+        except CommandError as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        except Exception as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        if result is not None and result != "":
+            self.console.insert_log_before_current_prompt(result, self._get_output_color())
+        try:
+            self._controller.execute("select")
+        except Exception:
+            pass
+        self._sync_diagram_view_from_core_after_console(del_cmd)
+
+    def _sync_diagram_move_to_controller(self, dx_scene: float, dy_scene: float) -> None:
+        """Apply a uniform scene delta to the core via ``set -p @selection position`` (after selection sync)."""
+        dx_m = dx_scene / UI_SCALE
+        dy_m = dy_scene / UI_SCALE
+        cmd = f"set -p @selection position {dx_m:.12g} {dy_m:.12g}"
+        prompt = str(self._controller.current.get("prompt_path"))
+        self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
+        try:
+            result = self._controller.execute(cmd)
+        except CommandError as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        except Exception as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return
+        if result is not None and result != "":
+            self.console.insert_log_before_current_prompt(result, self._get_output_color())
+        self._sync_diagram_view_from_core_after_console(cmd)
 
     def _panel_label(self, text: str) -> QWidget:
         widget = QWidget(self)
@@ -355,7 +511,7 @@ class MainWindow(QMainWindow):
             self._append_console_line("", self._get_output_color())
             self._append_console_line("Protocol commands:", self._get_output_color())
             self._append_console_line(
-                "  ls, lsattr [-l], cd <path>, new ..., select ..., set ..., get ..., del ...",
+                "  ls, lsattr [-l], cd <path>, new ..., select ..., set ... (set -p @selection …), get ..., del ... | del @selected",
                 self._get_output_color(),
             )
             self._show_prompt()
@@ -374,8 +530,7 @@ class MainWindow(QMainWindow):
 
         if result is not None and result != "":
             self._append_console_line(result, self._get_output_color())
-        if stripped.lower().startswith("load "):
-            self._refresh_diagram()
+        self._sync_diagram_view_from_core_after_console(stripped)
         self._show_prompt()
 
     def _history_prev(self) -> None:
@@ -401,7 +556,7 @@ class MainWindow(QMainWindow):
                 result = self._controller.execute(f'load "{file_name}"')
                 if result:
                     self._append_console_line(result, self._get_output_color())
-                self._refresh_diagram()
+                self._sync_diagram_view_from_core_after_console(f'load "{file_name}"')
             except Exception as exc:
                 self._append_console_line(f"error: {exc}", ERROR_COLOR)
             self._show_prompt()

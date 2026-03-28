@@ -3,26 +3,25 @@
 #                    two inputs into first '*', result into bottom of second '*';
 #                    final result in v_out.
 #
-# Diagram layout (see synarius_studio.diagram.dataflow_layout._BASE_POSITIONS).
-# vtx_b / vtx_d use explicit x,y,size (layout units M=15) so they sit clearly lower than vtx_a / vtx_c.
+# All node positions are model coordinates (x, y, size) on ``new Variable`` / ``new BasicOperator``.
 
 # --- Inputs (external sources, like the leftmost variable blocks in the diagram) ---
-new Variable vtx_a
+new Variable vtx_a 24 32.5 1
 new Variable vtx_b 24 95 1
-new Variable vtx_c
+new Variable vtx_c 24 137.5 1
 new Variable vtx_d 24 190 1
 
 # --- Intermediate carriers (sum branch, product branch) ---
-new Variable v_sum
-new Variable v_prod
+new Variable v_sum 368 47.5 1
+new Variable v_prod 368 152.5 1
 
 # --- Final output ---
-new Variable v_out
+new Variable v_out 708 85 1
 
 # --- Operators: one add, two multiplies (second multiply merges the two branches) ---
-new BasicOperator + name=op_add
-new BasicOperator * name=op_mul_a
-new BasicOperator * name=op_mul_b
+new BasicOperator + 188 40 1 name=op_add
+new BasicOperator * 188 145 1 name=op_mul_a
+new BasicOperator * 528 77.5 1 name=op_mul_b
 
 # Top branch: vtx_a, vtx_b -> op_add -> v_sum
 new Connector vtx_a op_add source_pin=out target_pin=in1

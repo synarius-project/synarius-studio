@@ -21,31 +21,7 @@ from .dataflow_items import (
 if TYPE_CHECKING:
     pass
 
-# Pre-scale layout (M = reference module 15); multiplied by UI_SCALE in scene coords.
-# Operator pins sit at local y = M, 2M, 1.5M — variable out at py+M matches when py = op_y or py = op_y+M.
-# Layout matches bundled test.syn: vtx_a–b (vtx_b may use explicit y in .syn), gap, vtx_c–d;
-# operators align with vtx_a row (op_add) and vtx_c row (op_mul_a); merge op_mul_b between branches.
-# Bottom column y values leave room when vtx_b is lowered via ``new Variable vtx_b x y size``.
-_LAYOUT_M = 15.0
-_Y0 = 40.0
-
-_BASE_POSITIONS: dict[str, tuple[float, float]] = {
-    "vtx_a": (24.0, _Y0),
-    "vtx_b": (24.0, _Y0 + 1.0 * _LAYOUT_M),
-    "op_add": (188.0, _Y0),
-    "v_sum": (368.0, _Y0 + 0.5 * _LAYOUT_M),
-    "vtx_c": (24.0, _Y0 + 7.0 * _LAYOUT_M),
-    "vtx_d": (24.0, _Y0 + 8.0 * _LAYOUT_M),
-    "op_mul_a": (188.0, _Y0 + 7.0 * _LAYOUT_M),
-    "v_prod": (368.0, _Y0 + 7.5 * _LAYOUT_M),
-    "op_mul_b": (528.0, _Y0 + 2.5 * _LAYOUT_M),
-    "v_out": (708.0, _Y0 + 3.0 * _LAYOUT_M),
-}
-
-_POSITIONS: dict[str, tuple[float, float]] = {
-    name: (x * UI_SCALE, y * UI_SCALE) for name, (x, y) in _BASE_POSITIONS.items()
-}
-
+# Default scene bounds (pre-scale units × UI_SCALE). Node positions come from the loaded model (``x``/``y`` on instances).
 SCENE_RECT = QRectF(0.0, 0.0, 900.0 * UI_SCALE, 520.0 * UI_SCALE)
 
 
@@ -71,8 +47,8 @@ def open_syn_dialog_start_dir() -> Path:
 def populate_scene_from_model(scene: QGraphicsScene, model: Model) -> None:
     """
     Clear ``scene`` and add items for all ``Variable``, ``BasicOperator``, and ``Connector``
-    children of ``model.root``. Uses fixed positions for the ``test.syn`` naming convention.
-    Variables with non-zero ``x`` or ``y`` in the model (``new Variable name x y size``) override that map.
+    children of ``model.root``. Block positions are ``(x, y)`` from each instance in the model
+    (as set by ``new Variable … x y size`` / ``new BasicOperator … x y …`` in the loaded script).
     """
     scene.clear()
     id_to_item: dict[UUID, VariableBlockItem | OperatorBlockItem] = {}
@@ -80,18 +56,14 @@ def populate_scene_from_model(scene: QGraphicsScene, model: Model) -> None:
     root = model.root
     for child in root.children:
         if isinstance(child, Variable):
-            fallback = _POSITIONS.get(child.name, (40.0, 40.0))
-            if child.x != 0.0 or child.y != 0.0:
-                pos = (child.x * UI_SCALE, child.y * UI_SCALE)
-            else:
-                pos = fallback
+            pos = (child.x * UI_SCALE, child.y * UI_SCALE)
             item = VariableBlockItem(child)
             item.setPos(pos[0], pos[1])
             scene.addItem(item)
             if child.id is not None:
                 id_to_item[child.id] = item
         elif isinstance(child, BasicOperator):
-            pos = _POSITIONS.get(child.name, (200.0, 200.0))
+            pos = (child.x * UI_SCALE, child.y * UI_SCALE)
             item = OperatorBlockItem(child)
             item.setPos(pos[0], pos[1])
             scene.addItem(item)
@@ -110,6 +82,7 @@ def populate_scene_from_model(scene: QGraphicsScene, model: Model) -> None:
         if a is None or b is None:
             continue
         edge = ConnectorEdgeItem()
+        edge.set_domain_connector(child)
         edge.attach_blocks(a, b, child.source_pin, child.target_pin)
         scene.addItem(edge)
 

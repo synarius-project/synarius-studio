@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Signal, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -14,6 +14,8 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
+
+from .dataflow_items import OperatorBlockItem, VariableBlockItem
 
 # Light yellow canvas (frame + scene); single source of truth for diagram area color.
 CANVAS_BACKGROUND_COLOR = "#fffef2"
@@ -76,9 +78,22 @@ class DataflowGraphicsView(QGraphicsView):
     - **Left-drag on empty background**: rubber-band rectangle to select multiple items (replace selection).
     - **Ctrl + left-drag on empty background**: pan the canvas (Qt’s Ctrl+rubber-band “add to selection” is not used).
     - **Ctrl** (over empty canvas): open-hand cursor hint; while panning, closed hand.
+
+    ``scene_left_release`` is emitted after each left-button release so the host can sync
+    scene selection to the core controller.
+
+    ``block_move_finished`` is emitted after a left-button release when movable blocks were dragged
+    together by a uniform scene delta (``dx``, ``dy`` in scene coordinates). Emitted **after**
+    ``scene_left_release`` so the host can run ``set -p @selection position …`` on a fresh selection.
+
+    **Delete** / **Backspace** emit ``delete_selection_requested`` so the host can run ``del`` on the core
+    and refresh the scene (default item removal is bypassed).
     """
 
     zoom_percent_changed = Signal(float)
+    scene_left_release = Signal()
+    block_move_finished = Signal(float, float)
+    delete_selection_requested = Signal()
 
     def __init__(self, scene: QGraphicsScene | None = None, parent=None) -> None:
         super().__init__(scene, parent)
@@ -104,6 +119,7 @@ class DataflowGraphicsView(QGraphicsView):
         self._pan_viewport_pos = None
         self._pan_h_scroll = 0
         self._pan_v_scroll = 0
+        self._move_anchor_snapshot: dict[int, QPointF] | None = None
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
         self.viewport().setCursor(self._arrow_cursor)
@@ -129,6 +145,7 @@ class DataflowGraphicsView(QGraphicsView):
             and not self._item_under(pos)
             and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         ):
+            self._move_anchor_snapshot = None
             self._pan_active = True
             self._pan_viewport_pos = pos
             self._pan_h_scroll = self.horizontalScrollBar().value()
@@ -137,6 +154,12 @@ class DataflowGraphicsView(QGraphicsView):
             event.accept()
             return
         super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton and self.scene() is not None:
+            self._move_anchor_snapshot = {
+                id(it): QPointF(it.pos())
+                for it in self.scene().selectedItems()
+                if isinstance(it, (VariableBlockItem, OperatorBlockItem))
+            }
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._pan_active and self._pan_viewport_pos is not None:
@@ -161,8 +184,37 @@ class DataflowGraphicsView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.scene_left_release.emit()
+            self._emit_block_move_finished_if_uniform()
+
+    def _emit_block_move_finished_if_uniform(self) -> None:
+        snap = self._move_anchor_snapshot
+        self._move_anchor_snapshot = None
+        if not snap or self.scene() is None:
+            return
+        scene = self.scene()
+        tol = 1e-2
+        deltas: list[QPointF] = []
+        for iid, old in snap.items():
+            it = next((x for x in scene.items() if id(x) == iid), None)
+            if it is None:
+                continue
+            deltas.append(it.pos() - old)
+        if not deltas:
+            return
+        d0 = deltas[0]
+        if not all(abs(d.x() - d0.x()) <= tol and abs(d.y() - d0.y()) <= tol for d in deltas):
+            return
+        if abs(d0.x()) <= tol and abs(d0.y()) <= tol:
+            return
+        self.block_move_finished.emit(d0.x(), d0.y())
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_selection_requested.emit()
+            event.accept()
+            return
         super().keyPressEvent(event)
         vp = self.viewport()
         self._cursor_hint_empty_canvas(vp.mapFromGlobal(QCursor.pos()))
