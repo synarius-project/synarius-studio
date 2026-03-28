@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synarius-studio"
-version = "0.0.9"
+version = "0.1.2"
 description = "PySide6 GUI for Synarius."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,7 @@ classifiers = [
 dependencies = [
   "PySide6>=6.0.0",
   # Not on PyPI. github.com/.../synarius-core main is behind; pin includes controller + CLI.
-  "synarius-core @ git+https://github.com/synarius-project/synarius-core.git@39acd12afb0858103a44e41a22ab8b0974971553",
+  "synarius-core @ git+https://github.com/synarius-project/synarius-core.git@42aa0cac5c695896c0fb01dec92a4e5ed1a2cf1e",
 ]
 
 [project.scripts]

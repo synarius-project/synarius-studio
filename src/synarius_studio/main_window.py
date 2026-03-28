@@ -25,7 +25,9 @@ from PySide6.QtWidgets import (
 from pathlib import Path
 from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
+from synarius_core.model import Connector
 
+from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, build_resources_panel
 from .diagram import DataflowGraphicsView, populate_scene_from_model
 from .diagram.dataflow_items import UI_SCALE, ConnectorEdgeItem, OperatorBlockItem, VariableBlockItem
 from .diagram.dataflow_canvas import CANVAS_BACKGROUND_COLOR, SCROLLBAR_STYLE_QSS
@@ -282,8 +284,13 @@ class MainWindow(QMainWindow):
     def _build_main_layout(self, root_layout: QVBoxLayout) -> None:
         left_tabs = QTabWidget(self)
         left_tabs.setTabPosition(QTabWidget.TabPosition.East)
-        left_tabs.addTab(self._panel_label("Resources"), "Resources")
-        left_tabs.setMinimumWidth(140)
+        left_tabs.setDocumentMode(True)
+        left_tabs.setStyleSheet("QTabWidget::pane { border: 0; margin: 0; padding: 0; }")
+        left_tabs.addTab(build_resources_panel(self._controller, self), "Resources")
+        _resource_tab_strip_w = max(left_tabs.tabBar().sizeHint().width(), 28)
+        _left_resources_w = RESOURCES_PANEL_FIXED_WIDTH + _resource_tab_strip_w
+        left_tabs.setFixedWidth(_left_resources_w)
+        self._left_resources_split_w = _left_resources_w
 
         canvas = QFrame(self)
         canvas.setFrameShape(QFrame.Shape.StyledPanel)
@@ -319,13 +326,47 @@ class MainWindow(QMainWindow):
         self.horizontal_split.setStretchFactor(0, 0)
         self.horizontal_split.setStretchFactor(1, 1)
         self.horizontal_split.setStretchFactor(2, 0)
-        self.horizontal_split.setSizes([220, 760, 220])
+        self.horizontal_split.setSizes([_left_resources_w, 712, 220])
 
         root_layout.addWidget(self.horizontal_split, 1)
 
     def _refresh_diagram(self) -> None:
-        populate_scene_from_model(self._diagram_scene, self._controller.model)
+        populate_scene_from_model(
+            self._diagram_scene,
+            self._controller.model,
+            on_connector_orthogonal_bends=self._apply_connector_orthogonal_bends,
+        )
         self._diagram_item_refs = list(self._diagram_scene.items())
+
+    @staticmethod
+    def _format_orthogonal_bends_csv(bends: list[float]) -> str:
+        parts: list[str] = []
+        for v in bends:
+            s = f"{float(v):.12g}"
+            if "." in s:
+                s = s.rstrip("0").rstrip(".")
+            parts.append(s)
+        return ",".join(parts)
+
+    def _apply_connector_orthogonal_bends(self, connector: Connector, bends: list[float]) -> bool:
+        """Persist connector routing via Controller Command Protocol (loggable ``set``)."""
+        token = connector.hash_name
+        csv = self._format_orthogonal_bends_csv(bends)
+        cmd = f"set {token}.orthogonal_bends {csv}"
+        prompt = str(self._controller.current.get("prompt_path"))
+        self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
+        try:
+            result = self._controller.execute(cmd)
+        except CommandError as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return False
+        except Exception as exc:
+            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            return False
+        if result is not None and result != "":
+            self.console.insert_log_before_current_prompt(result, self._get_output_color())
+        self._sync_diagram_view_from_core_after_console(cmd)
+        return True
 
     @staticmethod
     def _graphics_item_model_id(item: QGraphicsItem) -> UUID | None:
@@ -577,10 +618,11 @@ class MainWindow(QMainWindow):
 
     def _toggle_right_panel(self, visible: bool) -> None:
         self.right_tabs.setVisible(visible)
+        lw = self._left_resources_split_w
         if visible:
-            self.horizontal_split.setSizes([220, 760, 220])
+            self.horizontal_split.setSizes([lw, 712, 220])
         else:
-            self.horizontal_split.setSizes([220, 980, 0])
+            self.horizontal_split.setSizes([lw, 932, 0])
 
     def _toggle_bottom_panel(self, visible: bool) -> None:
         self.bottom_tabs.setVisible(visible)

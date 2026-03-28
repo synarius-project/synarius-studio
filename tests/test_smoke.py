@@ -16,3 +16,10 @@ class SmokeTest(unittest.TestCase):
         # Importing the package should work even if PySide6 isn't installed yet.
         self.assertIsNotNone(synarius_studio)
 
+    def test_standard_library_from_core(self) -> None:
+        from synarius_studio.standard_library import standard_library_root
+
+        root = standard_library_root()
+        self.assertTrue((root / "libraryDescription.xml").is_file())
+        self.assertTrue((root / "components" / "Add" / "elementDescription.xml").is_file())
+

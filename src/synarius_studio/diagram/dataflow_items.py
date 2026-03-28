@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -31,6 +32,11 @@ from PySide6.QtWidgets import (
 )
 
 from synarius_core.model import BasicOperator, BasicOperatorType, Connector, Variable
+from synarius_core.model.connector_routing import (
+    auto_orthogonal_bends,
+    orthogonal_drag_segments,
+    polyline_for_endpoints,
+)
 
 if TYPE_CHECKING:
     pass
@@ -68,6 +74,36 @@ MARK_VARIABLE_HIGHLIGHT_RADIUS = max(3.5, MODULE * 0.22)
 MARK_OPERATOR_HIGHLIGHT_RADIUS = max(2.5, MODULE * 0.12)
 # Connector hit target: line + same padding as blocks + small comfort margin.
 _MARK_CONNECTOR_HIT_SLACK = 8.0
+# Hit-test radius around a draggable leg (scene px); PyLinX uses broad segment quads.
+_CONNECTOR_BEND_DRAG_HIT = 12.0
+_CONNECTOR_BEND_DRAG_HIT_SQ = _CONNECTOR_BEND_DRAG_HIT * _CONNECTOR_BEND_DRAG_HIT
+
+
+def _bends_list_equal(a: list[float], b: list[float]) -> bool:
+    if len(a) != len(b):
+        return False
+    return all(math.isclose(float(x), float(y), rel_tol=0.0, abs_tol=1e-4) for x, y in zip(a, b))
+
+
+def _dist_sq_point_to_seg(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    vx = x2 - x1
+    vy = y2 - y1
+    wx = px - x1
+    wy = py - y1
+    c1 = vx * wx + vy * wy
+    if c1 <= 0.0:
+        return wx * wx + wy * wy
+    c2 = vx * vx + vy * vy
+    if c2 <= c1:
+        dx = px - x2
+        dy = py - y2
+        return dx * dx + dy * dy
+    t = c1 / c2
+    lx = x1 + t * vx
+    ly = y1 + t * vy
+    dx = px - lx
+    dy = py - ly
+    return dx * dx + dy * dy
 
 
 def _style_option_without_item_selection(option: QStyleOptionGraphicsItem) -> QStyleOptionGraphicsItem:
@@ -81,6 +117,11 @@ def _style_option_without_item_selection(option: QStyleOptionGraphicsItem) -> QS
 def _snap_pos_half_module(pos: QPointF) -> QPointF:
     step = MODULE * 0.5
     return QPointF(round(pos.x() / step) * step, round(pos.y() / step) * step)
+
+
+def _snap_scalar_half_module(v: float) -> float:
+    step = MODULE * 0.5
+    return round(v / step) * step
 
 
 def _refresh_connectors_touching(block: QGraphicsItem) -> None:
@@ -588,6 +629,45 @@ def _build_rounded_orthogonal_path(
     return path
 
 
+def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QPainterPath:
+    """Axis-aligned polyline with small quadratic fillets at interior corners."""
+    path = QPainterPath()
+    n = len(points)
+    if n == 0:
+        return path
+    if n == 1:
+        path.moveTo(points[0])
+        return path
+    if n == 2:
+        path.moveTo(points[0])
+        path.lineTo(points[1])
+        return path
+    path.moveTo(points[0])
+    for i in range(1, n - 1):
+        p0, p1, p2 = points[i - 1], points[i], points[i + 1]
+        dx1 = p1.x() - p0.x()
+        dy1 = p1.y() - p0.y()
+        dx2 = p2.x() - p1.x()
+        dy2 = p2.y() - p1.y()
+        len1 = math.hypot(dx1, dy1)
+        len2 = math.hypot(dx2, dy2)
+        if len1 < 1e-9 or len2 < 1e-9:
+            path.lineTo(p1)
+            continue
+        ux1, uy1 = dx1 / len1, dy1 / len1
+        ux2, uy2 = dx2 / len2, dy2 / len2
+        r = min(radius, len1 * 0.32, len2 * 0.32)
+        r = max(0.5, r)
+        c1x = p1.x() - ux1 * r
+        c1y = p1.y() - uy1 * r
+        c2x = p1.x() + ux2 * r
+        c2y = p1.y() + uy2 * r
+        path.lineTo(QPointF(c1x, c1y))
+        path.quadTo(p1, QPointF(c2x, c2y))
+    path.lineTo(points[-1])
+    return path
+
+
 class ConnectorEdgeItem(QGraphicsObject):
     """Orthogonal connector (no line-end arrow; target input pin shows direction)."""
 
@@ -602,15 +682,31 @@ class ConnectorEdgeItem(QGraphicsObject):
         self._pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self.setZValue(-10.0)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setAcceptHoverEvents(True)
         self._connector: Connector | None = None
         self._att_src: QGraphicsItem | None = None
         self._att_dst: QGraphicsItem | None = None
         self._att_src_pin: str = ""
         self._att_dst_pin: str = ""
+        self._bends_apply_fn: Callable[[Connector, list[float]], bool] | None = None
+        # Working copy during drag; committed via ``_apply_bends_list`` on mouse release only.
+        self._bend_drag_local: list[float] | None = None
+        # bend_index, axis ('x'|'y'), press scene pos, bend value at press, sx, sy, tx, ty
+        self._bend_drag: tuple[int, str, QPointF, float, float, float, float, float] | None = None
 
     def set_domain_connector(self, connector: Connector) -> None:
         """Bind the scene edge to the core ``Connector`` (for ``select`` tokens)."""
         self._connector = connector
+
+    def set_bends_apply_fn(self, fn: Callable[[Connector, list[float]], bool] | None) -> None:
+        """Apply ``orthogonal_bends`` only through this callback (e.g. controller ``set`` + console log)."""
+        self._bends_apply_fn = fn
+
+    def _apply_bends_list(self, bends: list[float]) -> bool:
+        c = self._connector
+        if c is None or self._bends_apply_fn is None:
+            return False
+        return self._bends_apply_fn(c, list(bends))
 
     @property
     def domain_connector(self) -> Connector | None:
@@ -652,12 +748,178 @@ class ConnectorEdgeItem(QGraphicsObject):
         if block is self._att_src or block is self._att_dst:
             self._sync_attached_geometry()
 
-    def set_endpoints(self, p1: QPointF, p2: QPointF) -> None:
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: object) -> object:
+        result = super().itemChange(change, value)
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged and not value:
+            self.unsetCursor()
+        return result
+
+    def _poly_tuple(self) -> list[tuple[float, float]]:
+        p1, p2 = self._p1, self._p2
+        if self._connector is None:
+            return [(p1.x(), p1.y()), (p2.x(), p2.y())]
+        return self._connector.polyline_xy((p1.x(), p1.y()), (p2.x(), p2.y()))
+
+    def _rebuild_stroke(self) -> None:
         self.prepareGeometryChange()
+        p1, p2 = self._p1, self._p2
+        c = self._connector
+        sx, sy = p1.x(), p1.y()
+        tx, ty = p2.x(), p2.y()
+        if self._bend_drag_local is not None:
+            tpl = polyline_for_endpoints(sx, sy, tx, ty, self._bend_drag_local)
+            pts = [QPointF(x, y) for x, y in tpl]
+            self._stroke_path = _rounded_orthogonal_chain(pts, radius=14.0)
+        elif c is not None and c._orthogonal_bends:
+            tpl = c.polyline_xy((sx, sy), (tx, ty))
+            pts = [QPointF(x, y) for x, y in tpl]
+            self._stroke_path = _rounded_orthogonal_chain(pts, radius=14.0)
+        else:
+            self._stroke_path = _build_rounded_orthogonal_path(p1, p2)
+        self.update()
+
+    def set_endpoints(self, p1: QPointF, p2: QPointF) -> None:
         self._p1 = p1
         self._p2 = p2
-        self._stroke_path = _build_rounded_orthogonal_path(p1, p2)
-        self.update()
+        self._rebuild_stroke()
+
+    def _preview_bends(self) -> list[float]:
+        """Stored route or auto default (not yet persisted)."""
+        if self._connector is None:
+            return []
+        if self._connector._orthogonal_bends:
+            return list(self._connector._orthogonal_bends)
+        sx, sy = self._p1.x(), self._p1.y()
+        tx, ty = self._p2.x(), self._p2.y()
+        return auto_orthogonal_bends(sx, sy, tx, ty)
+
+    def _pick_bend_at(self, scene_pos: QPointF) -> tuple[int, str] | None:
+        if self._connector is None:
+            return None
+        preview = self._preview_bends()
+        if not preview:
+            return None
+        sx, sy = self._p1.x(), self._p1.y()
+        tx, ty = self._p2.x(), self._p2.y()
+        segs = orthogonal_drag_segments(sx, sy, tx, ty, preview)
+        px, py = scene_pos.x(), scene_pos.y()
+        best: tuple[int, str] | None = None
+        best_d = _CONNECTOR_BEND_DRAG_HIT_SQ
+        for x1, y1, x2, y2, bi, axis in segs:
+            d = _dist_sq_point_to_seg(px, py, x1, y1, x2, y2)
+            if d <= best_d:
+                best_d = d
+                best = (bi, axis)
+        return best
+
+    def _update_bend_hover_cursor(self, scene_pos: QPointF) -> None:
+        if self._bend_drag is not None:
+            return
+        if not self.isSelected() or self._connector is None:
+            self.unsetCursor()
+            return
+        pick = self._pick_bend_at(scene_pos)
+        if pick is None:
+            self.unsetCursor()
+            return
+        axis = pick[1]
+        self.setCursor(
+            QCursor(
+                Qt.CursorShape.SizeHorCursor if axis == "x" else Qt.CursorShape.SizeVerCursor,
+            )
+        )
+
+    def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
+        if self._bend_drag is None:
+            self._update_bend_hover_cursor(event.scenePos())
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
+        if self._bend_drag is None:
+            self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._connector is not None
+            and self._bend_drag is None
+        ):
+            pick = self._pick_bend_at(event.scenePos())
+            if pick is not None:
+                self.setSelected(True)
+                bend_i, axis = pick
+                sx, sy = self._p1.x(), self._p1.y()
+                tx, ty = self._p2.x(), self._p2.y()
+                if self._connector._orthogonal_bends:
+                    working = list(self._connector._orthogonal_bends)
+                else:
+                    working = auto_orthogonal_bends(sx, sy, tx, ty)
+                if not working or not (0 <= bend_i < len(working)):
+                    event.accept()
+                    return
+                self._bend_drag_local = working
+                self.grabMouse()
+                bends = self._bend_drag_local
+                if 0 <= bend_i < len(bends):
+                    self._bend_drag = (
+                        bend_i,
+                        axis,
+                        QPointF(event.scenePos()),
+                        float(bends[bend_i]),
+                        sx,
+                        sy,
+                        tx,
+                        ty,
+                    )
+                else:
+                    self.ungrabMouse()
+                    self._bend_drag_local = None
+                self._rebuild_stroke()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if self._bend_drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            st = self._bend_drag
+            bend_i, axis, press_pt, start_val, sx, sy, tx, ty = st
+            if self._connector is None:
+                return
+            if axis == "x":
+                new_v = start_val + (event.scenePos().x() - press_pt.x())
+            else:
+                new_v = start_val + (event.scenePos().y() - press_pt.y())
+            new_v = _snap_scalar_half_module(new_v)
+            b = self._bend_drag_local
+            if b is not None and 0 <= bend_i < len(b):
+                b[bend_i] = new_v
+                self._rebuild_stroke()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._bend_drag is not None:
+            final_bends = list(self._bend_drag_local) if self._bend_drag_local is not None else None
+            c = self._connector
+            self.ungrabMouse()
+            self._bend_drag = None
+            self._bend_drag_local = None
+            if (
+                final_bends is not None
+                and c is not None
+                and not _bends_list_equal(final_bends, list(c._orthogonal_bends))
+            ):
+                self._apply_bends_list(final_bends)
+            self._rebuild_stroke()
+            if self.isSelected():
+                self._update_bend_hover_cursor(event.scenePos())
+            else:
+                self.unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def shape(self) -> QPainterPath:
         stroker = QPainterPathStroker()

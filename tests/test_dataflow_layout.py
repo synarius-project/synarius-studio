@@ -12,10 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PySide6.QtWidgets import QApplication, QGraphicsScene  # noqa: E402
 
 from synarius_core.controller import MinimalController  # noqa: E402
+from synarius_core.model import Connector  # noqa: E402
 from synarius_studio.diagram.dataflow_layout import (  # noqa: E402
     default_sample_syn_path,
     populate_scene_from_model,
 )
+
+
+def _direct_connector_bends(connector: Connector, bends: list[float]) -> bool:
+    connector.set("orthogonal_bends", list(bends))
+    return True
 
 
 class DataflowLayoutTest(unittest.TestCase):
@@ -29,7 +35,11 @@ class DataflowLayoutTest(unittest.TestCase):
         ctl = MinimalController()
         ctl.execute(f'load "{path}"')
         scene = QGraphicsScene()
-        populate_scene_from_model(scene, ctl.model)
+        populate_scene_from_model(
+            scene,
+            ctl.model,
+            on_connector_orthogonal_bends=_direct_connector_bends,
+        )
         # 7 variables + 3 operators + 9 connectors = 19 top-level items (children: labels, SVG glyphs).
         roots = [i for i in scene.items() if i.parentItem() is None]
         self.assertEqual(len(roots), 19)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -44,7 +45,12 @@ def open_syn_dialog_start_dir() -> Path:
     return default_sample_syn_path().parent
 
 
-def populate_scene_from_model(scene: QGraphicsScene, model: Model) -> None:
+def populate_scene_from_model(
+    scene: QGraphicsScene,
+    model: Model,
+    *,
+    on_connector_orthogonal_bends: Callable[[Connector, list[float]], bool] | None = None,
+) -> None:
     """
     Clear ``scene`` and add items for all ``Variable``, ``BasicOperator``, and ``Connector``
     children of ``model.root``. Block positions are ``(x, y)`` from each instance in the model
@@ -83,6 +89,7 @@ def populate_scene_from_model(scene: QGraphicsScene, model: Model) -> None:
             continue
         edge = ConnectorEdgeItem()
         edge.set_domain_connector(child)
+        edge.set_bends_apply_fn(on_connector_orthogonal_bends)
         edge.attach_blocks(a, b, child.source_pin, child.target_pin)
         scene.addItem(edge)
 
