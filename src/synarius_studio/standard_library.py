@@ -1,8 +1,8 @@
-"""Synarius Standard Library (FMF v0.1): Grundrechenarten.
+"""Standard library paths for the Studio GUI (data lives in ``synarius-core``).
 
-The on-disk library ships inside ``synarius-core``; Studio re-exports the same
-paths so GUI and tooling can resolve icons and element metadata without a second
-copy.
+FMF (library packaging) is its own specification; its version is unrelated to
+Synarius Studio releases. This module re-exports ``synarius_core.standard_library``
+so the GUI can resolve icons and element metadata without a second on-disk copy.
 """
 
 from __future__ import annotations
