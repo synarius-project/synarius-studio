@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Signal, Qt
-from PySide6.QtGui import QColor, QCursor, QEnterEvent, QMouseEvent, QPainter, QWheelEvent
+from PySide6.QtCore import QEvent, QPoint, Signal, Qt
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QEnterEvent,
+    QGuiApplication,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 # Light yellow canvas (frame + scene); single source of truth for diagram area color.
-CANVAS_BACKGROUND_COLOR = "#fff9c4"
+CANVAS_BACKGROUND_COLOR = "#fffef2"
 
 # Shared with console so diagram and terminal use identical scrollbar chrome (Qt style sheet).
 SCROLLBAR_STYLE_QSS = """
@@ -64,7 +73,9 @@ class DataflowGraphicsView(QGraphicsView):
     - **Wheel**: zoom (anchor under mouse).
     - **Ctrl + wheel**: vertical scroll.
     - **Shift + wheel**: horizontal scroll.
-    - **Left-drag on empty background**: pan; hand cursor while available/dragging.
+    - **Left-drag on empty background**: rubber-band rectangle to select multiple items (replace selection).
+    - **Ctrl + left-drag on empty background**: pan the canvas (Qt’s Ctrl+rubber-band “add to selection” is not used).
+    - **Ctrl** (over empty canvas): open-hand cursor hint; while panning, closed hand.
     """
 
     zoom_percent_changed = Signal(float)
@@ -76,14 +87,17 @@ class DataflowGraphicsView(QGraphicsView):
             | QPainter.RenderHint.TextAntialiasing
             | QPainter.RenderHint.SmoothPixmapTransform
         )
-        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.setRubberBandSelectionMode(Qt.ItemSelectionMode.IntersectsItemShape)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setBackgroundBrush(QColor(CANVAS_BACKGROUND_COLOR))
         self.setStyleSheet(SCROLLBAR_STYLE_QSS)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
+        self._open_hand = QCursor(Qt.CursorShape.OpenHandCursor)
         self._closed_hand = QCursor(Qt.CursorShape.ClosedHandCursor)
         self._arrow_cursor = QCursor(Qt.CursorShape.ArrowCursor)
         self._pan_active = False
@@ -97,9 +111,24 @@ class DataflowGraphicsView(QGraphicsView):
     def _item_under(self, pos) -> bool:
         return self.itemAt(pos) is not None
 
+    def _cursor_hint_empty_canvas(self, viewport_pos: QPoint) -> None:
+        """Open hand if Ctrl is held over empty canvas; otherwise arrow (items set their own cursor)."""
+        if self._pan_active:
+            return
+        if self._item_under(viewport_pos):
+            return
+        if QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.viewport().setCursor(self._open_hand)
+        else:
+            self.viewport().setCursor(self._arrow_cursor)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
-        if event.button() == Qt.MouseButton.LeftButton and not self._item_under(pos):
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and not self._item_under(pos)
+            and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        ):
             self._pan_active = True
             self._pan_viewport_pos = pos
             self._pan_h_scroll = self.horizontalScrollBar().value()
@@ -117,23 +146,37 @@ class DataflowGraphicsView(QGraphicsView):
             self.verticalScrollBar().setValue(self._pan_v_scroll - delta.y())
             event.accept()
             return
-        if event.buttons() == Qt.MouseButton.NoButton:
-            self.viewport().setCursor(self._arrow_cursor)
         super().mouseMoveEvent(event)
+        if not self.rubberBandRect().isNull():
+            return
+        pos = event.position().toPoint()
+        self._cursor_hint_empty_canvas(pos)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._pan_active:
             self._pan_active = False
             self._pan_viewport_pos = None
-            self.viewport().setCursor(self._arrow_cursor)
+            pos = event.position().toPoint()
+            self._cursor_hint_empty_canvas(pos)
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        super().keyPressEvent(event)
+        vp = self.viewport()
+        self._cursor_hint_empty_canvas(vp.mapFromGlobal(QCursor.pos()))
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        super().keyReleaseEvent(event)
+        vp = self.viewport()
+        self._cursor_hint_empty_canvas(vp.mapFromGlobal(QCursor.pos()))
+
     def enterEvent(self, event: QEnterEvent) -> None:
-        if not self._pan_active:
-            self.viewport().setCursor(self._arrow_cursor)
         super().enterEvent(event)
+        if not self._pan_active:
+            vp = self.viewport()
+            self._cursor_hint_empty_canvas(vp.mapFromGlobal(QCursor.pos()))
 
     def leaveEvent(self, event: QEvent) -> None:
         if not self._pan_active:

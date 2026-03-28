@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QFontMetricsF,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QPolygonF,
 )
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QGraphicsSceneHoverEvent,
     QGraphicsSceneMouseEvent,
     QGraphicsSimpleTextItem,
+    QStyle,
     QStyleOptionGraphicsItem,
     QWidget,
 )
@@ -57,6 +59,23 @@ PIN_TRI_HALF_HEIGHT = MODULE * (4.5 / _REF_PIN_MOD) * _PIN_TRI_SCALE
 
 OPERATOR_GLYPH_STROKE = QColor(22, 22, 28)
 _FILL_BLUE = QColor(36, 104, 220)
+
+# Global selection / “marked” highlight (reassign at runtime to theme).
+MARK_HIGHLIGHT_COLOR = QColor(88, 108, 212, 142)
+# Outward extent from the element outline (scene px); same for blocks and connectors.
+MARK_BLOCK_PADDING = 3.0
+MARK_VARIABLE_HIGHLIGHT_RADIUS = max(3.5, MODULE * 0.22)
+MARK_OPERATOR_HIGHLIGHT_RADIUS = max(2.5, MODULE * 0.12)
+# Connector hit target: line + same padding as blocks + small comfort margin.
+_MARK_CONNECTOR_HIT_SLACK = 8.0
+
+
+def _style_option_without_item_selection(option: QStyleOptionGraphicsItem) -> QStyleOptionGraphicsItem:
+    """Avoid Qt’s default selection chrome; we draw ``MARK_HIGHLIGHT_COLOR`` ourselves."""
+    opt = QStyleOptionGraphicsItem(option)
+    opt.state &= ~QStyle.StateFlag.State_Selected
+    opt.state &= ~QStyle.StateFlag.State_HasFocus
+    return opt
 
 
 def _snap_pos_half_module(pos: QPointF) -> QPointF:
@@ -374,12 +393,17 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._label.setBrush(QColor(30, 30, 30))
         self._label.setZValue(2.0)
-        self._label.setFont(_font_for_variable_name(variable.name, VARIABLE_WIDTH, VARIABLE_HEIGHT))
+        font = _font_for_variable_name(variable.name, VARIABLE_WIDTH, VARIABLE_HEIGHT)
+        self._label.setFont(font)
+        fm = QFontMetricsF(font)
+        name = variable.name
         br = self._label.boundingRect()
-        self._label.setPos(
-            (VARIABLE_WIDTH - br.width()) / 2,
-            (VARIABLE_HEIGHT - br.height()) / 2,
-        )
+        # Horizontal: width from metrics (stable centering). Vertical: SimpleTextItem’s rect
+        # sits low vs. caps; nudge up so the label reads centered in the block.
+        text_w = fm.horizontalAdvance(name)
+        x = (VARIABLE_WIDTH - text_w) / 2
+        y = (VARIABLE_HEIGHT - br.height()) / 2 - 0.45 * fm.descent()
+        self._label.setPos(x, y)
 
         _apply_light_diagonal_shadow(self)
 
@@ -388,6 +412,24 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._pin_in.setPos(0.0, cy)
         self._pin_out = _OutputPinItem(self)
         self._pin_out.setPos(VARIABLE_WIDTH, cy)
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self.isSelected():
+            r = self.rect()
+            pad = MARK_BLOCK_PADDING
+            hr = r.adjusted(-pad, -pad, pad, pad)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(MARK_HIGHLIGHT_COLOR)
+            painter.drawRoundedRect(hr, MARK_VARIABLE_HIGHLIGHT_RADIUS, MARK_VARIABLE_HIGHLIGHT_RADIUS)
+        painter.restore()
+        super().paint(painter, _style_option_without_item_selection(option), widget)
 
     def variable(self) -> Variable:
         return self._variable
@@ -429,6 +471,24 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._pin_out.setPos(OPERATOR_SIZE, 1.5 * MODULE)
 
         _apply_light_diagonal_shadow(self)
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self.isSelected():
+            r = self.rect()
+            pad = MARK_BLOCK_PADDING
+            hr = r.adjusted(-pad, -pad, pad, pad)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(MARK_HIGHLIGHT_COLOR)
+            painter.drawRoundedRect(hr, MARK_OPERATOR_HIGHLIGHT_RADIUS, MARK_OPERATOR_HIGHLIGHT_RADIUS)
+        painter.restore()
+        super().paint(painter, _style_option_without_item_selection(option), widget)
 
     def operator(self) -> BasicOperator:
         return self._operator
@@ -534,6 +594,7 @@ class ConnectorEdgeItem(QGraphicsObject):
         self._pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self._pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self.setZValue(-10.0)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self._att_src: QGraphicsItem | None = None
         self._att_dst: QGraphicsItem | None = None
         self._att_src_pin: str = ""
@@ -577,8 +638,16 @@ class ConnectorEdgeItem(QGraphicsObject):
         self._stroke_path = _build_rounded_orthogonal_path(p1, p2)
         self.update()
 
+    def shape(self) -> QPainterPath:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(CONNECTOR_LINE_WIDTH + 2.0 * MARK_BLOCK_PADDING + _MARK_CONNECTOR_HIT_SLACK)
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        return stroker.createStroke(self._stroke_path)
+
     def boundingRect(self) -> QRectF:
-        margin = max(8.0, CONNECTOR_LINE_WIDTH * 2.0)
+        half_halo = 0.5 * (CONNECTOR_LINE_WIDTH + 2.0 * MARK_BLOCK_PADDING)
+        margin = max(6.0, half_halo + 1.0)
         br = self._stroke_path.boundingRect()
         br = br.united(QRectF(self._p1, self._p1))
         br = br.united(QRectF(self._p2, self._p2))
@@ -590,6 +659,17 @@ class ConnectorEdgeItem(QGraphicsObject):
         option: QStyleOptionGraphicsItem,
         widget: QWidget | None = None,
     ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self.isSelected():
+            # Halo width: black stroke + same outward pad as variable/operator rects.
+            halo_w = CONNECTOR_LINE_WIDTH + 2.0 * MARK_BLOCK_PADDING
+            halo = QPen(MARK_HIGHLIGHT_COLOR, halo_w)
+            halo.setCapStyle(Qt.PenCapStyle.RoundCap)
+            halo.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.strokePath(self._stroke_path, halo)
         painter.setPen(self._pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self._stroke_path)
+        painter.restore()

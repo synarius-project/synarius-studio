@@ -3,15 +3,14 @@
 #                    two inputs into first '*', result into bottom of second '*';
 #                    final result in v_out.
 #
-# Diagram layout (see synarius_studio.diagram.dataflow_layout._BASE_POSITIONS):
-#   Left column: vtx_a, vtx_b (close), gap, vtx_c, vtx_d (close).
-#   Columns: inputs -> op_add / op_mul_a -> v_sum / v_prod -> op_mul_b -> v_out.
+# Diagram layout (see synarius_studio.diagram.dataflow_layout._BASE_POSITIONS).
+# vtx_b / vtx_d use explicit x,y,size (layout units M=15) so they sit clearly lower than vtx_a / vtx_c.
 
 # --- Inputs (external sources, like the leftmost variable blocks in the diagram) ---
 new Variable vtx_a
-new Variable vtx_b
+new Variable vtx_b 24 95 1
 new Variable vtx_c
-new Variable vtx_d
+new Variable vtx_d 24 190 1
 
 # --- Intermediate carriers (sum branch, product branch) ---
 new Variable v_sum
