@@ -474,7 +474,7 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
 
         vfont = QFont()
         # Simulation overlay: slightly larger for readability over the canvas grid.
-        vfont.setPixelSize(max(8, int(MODULE * 1.5)))
+        vfont.setPixelSize(max(8, int(MODULE * 1.0)))
         self._value_label = QGraphicsSimpleTextItem("", self)
         self._value_label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._value_label.setBrush(QColor(0, 110, 45))
