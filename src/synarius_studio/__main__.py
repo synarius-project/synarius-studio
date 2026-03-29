@@ -12,17 +12,19 @@ def _load_run():
 
         return run
 
-    try:
+    # Running ``python .../synarius_studio/__main__.py`` sets ``__package__`` to None; relative imports fail.
+    if __package__:
         from .app import run
-    except ImportError:
-        studio_src = Path(__file__).resolve().parents[1]
-        repo_root = studio_src.parents[1]
-        core_src = repo_root / "synarius-core" / "src"
-        if str(studio_src) not in sys.path:
-            sys.path.insert(0, str(studio_src))
-        if core_src.is_dir() and str(core_src) not in sys.path:
-            sys.path.insert(0, str(core_src))
-        from synarius_studio.app import run
+        return run
+
+    studio_src = Path(__file__).resolve().parents[1]
+    repo_root = studio_src.parents[1]
+    core_src = repo_root / "synarius-core" / "src"
+    if str(studio_src) not in sys.path:
+        sys.path.insert(0, str(studio_src))
+    if core_src.is_dir() and str(core_src) not in sys.path:
+        sys.path.insert(0, str(core_src))
+    from synarius_studio.app import run
 
     return run
 

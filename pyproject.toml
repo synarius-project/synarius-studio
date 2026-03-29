@@ -34,7 +34,12 @@ where = ["src"]
 include = ["synarius_studio*"]
 
 [tool.setuptools.package-data]
-synarius_studio = ["resources/*.syn", "diagram/svg/*.svg"]
+synarius_studio = ["resources/*.syn", "diagram/svg/*.svg", "icons/*"]
+
+# Local monorepo: synarius-core lives next to synarius-studio. Pylance/Pyright need this
+# to resolve `synarius_core.*` when the sibling package is not installed in the venv.
+[tool.pyright]
+extraPaths = ["../synarius-core/src"]
 
 [project.optional-dependencies]
 dev = []

@@ -6,19 +6,36 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
     QEnterEvent,
     QGuiApplication,
     QKeyEvent,
     QMouseEvent,
     QPainter,
+    QPalette,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
+from synarius_core.controller import MinimalController
+from synarius_core.variable_naming import InvalidVariableNameError
+
+from ..theme import SELECTION_HIGHLIGHT_TEXT, selection_highlight_qcolor
+
+from .connector_interactive import ConnectorRouteTool
 from .dataflow_items import OperatorBlockItem, VariableBlockItem
+from .placement_interactive import (
+    VARIABLE_NAME_DRAG_MIME,
+    CanvasPlacementTool,
+    variable_new_instance_command,
+)
 
 # Light yellow canvas (frame + scene); single source of truth for diagram area color.
 CANVAS_BACKGROUND_COLOR = "#fffef2"
+# PyLinX prototype: PX_Templ.color.backgroundSim — QColor(236, 255, 236).
+CANVAS_SIMULATION_BACKGROUND_COLOR = "#ecffec"
 
 # Shared with console so diagram and terminal use identical scrollbar chrome (Qt style sheet).
 SCROLLBAR_STYLE_QSS = """
@@ -94,6 +111,9 @@ class DataflowGraphicsView(QGraphicsView):
     scene_left_release = Signal()
     block_move_finished = Signal(float, float)
     delete_selection_requested = Signal()
+    connector_route_command = Signal(str)
+    placement_command = Signal(str)
+    placement_cancelled = Signal()
 
     def __init__(self, scene: QGraphicsScene | None = None, parent=None) -> None:
         super().__init__(scene, parent)
@@ -109,11 +129,18 @@ class DataflowGraphicsView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setBackgroundBrush(QColor(CANVAS_BACKGROUND_COLOR))
+        self.viewport().setAutoFillBackground(True)
         self.setStyleSheet(SCROLLBAR_STYLE_QSS)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        _pal = self.palette()
+        _hl = selection_highlight_qcolor(opaque=True)
+        _pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Highlight, _hl)
+        _pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.HighlightedText, QColor(SELECTION_HIGHLIGHT_TEXT))
+        self.setPalette(_pal)
 
         self._open_hand = QCursor(Qt.CursorShape.OpenHandCursor)
         self._closed_hand = QCursor(Qt.CursorShape.ClosedHandCursor)
+        self._placement_hand = QCursor(Qt.CursorShape.ClosedHandCursor)
         self._arrow_cursor = QCursor(Qt.CursorShape.ArrowCursor)
         self._pan_active = False
         self._pan_viewport_pos = None
@@ -123,6 +150,54 @@ class DataflowGraphicsView(QGraphicsView):
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
         self.viewport().setCursor(self._arrow_cursor)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+
+        self._route_tool: ConnectorRouteTool | None = None
+        self._placement_tool: CanvasPlacementTool | None = None
+        self._controller_for_placement: MinimalController | None = None
+        self._eat_next_left_release_for_route = False
+        self._interaction_locked = False
+
+    def set_viewport_canvas_color(self, hex_color: str) -> None:
+        """Match scene and parent chrome: QGraphicsView draws this behind / around the scene."""
+        self.setBackgroundBrush(QColor(hex_color))
+
+    def set_interaction_locked(self, locked: bool) -> None:
+        """Simulation / view-only mode: no editing; Ctrl+drag on empty canvas still pans."""
+        self._interaction_locked = bool(locked)
+        if locked:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            if self._placement_tool:
+                self._placement_tool.cancel(emit_cancelled=False)
+            if self._route_tool:
+                self._route_tool.cancel()
+            self.viewport().setCursor(self._arrow_cursor)
+        else:
+            self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self._pan_active = False
+
+    def attach_connector_route_tool(self, controller: MinimalController) -> None:
+        """Enable click-to-route connectors (orthogonal H/V) using the given controller model."""
+        if self.scene() is None:
+            return
+        self._route_tool = ConnectorRouteTool(controller, self.scene(), self)
+        self._route_tool.finished.connect(self.connector_route_command.emit)
+
+    def attach_placement_tool(self, controller: MinimalController) -> None:
+        if self.scene() is None:
+            return
+        self._controller_for_placement = controller
+        self._placement_tool = CanvasPlacementTool(self.scene(), self)
+        self._placement_tool.finished.connect(self.placement_command.emit)
+        self._placement_tool.cancelled.connect(self.placement_cancelled.emit)
+
+    def placement_tool(self) -> CanvasPlacementTool | None:
+        return self._placement_tool
+
+    def cancel_interactive_route(self) -> None:
+        if self._route_tool and self._route_tool.active():
+            self._route_tool.cancel()
 
     def _item_under(self, pos) -> bool:
         return self.itemAt(pos) is not None
@@ -140,6 +215,40 @@ class DataflowGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
+        if self._interaction_locked:
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and not self._item_under(pos)
+                and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            ):
+                self._move_anchor_snapshot = None
+                self._pan_active = True
+                self._pan_viewport_pos = pos
+                self._pan_h_scroll = self.horizontalScrollBar().value()
+                self._pan_v_scroll = self.verticalScrollBar().value()
+                self.viewport().setCursor(self._closed_hand)
+                event.accept()
+                return
+            event.accept()
+            return
+        if (
+            self._route_tool
+            and self._route_tool.active()
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            event.accept()
+            return
+        if (
+            self._placement_tool
+            and self._placement_tool.active()
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._controller_for_placement is not None
+        ):
+            scene_pos = self.mapToScene(pos)
+            if self._placement_tool.try_place(self._controller_for_placement, scene_pos):
+                self._eat_next_left_release_for_route = True
+            event.accept()
+            return
         if (
             event.button() == Qt.MouseButton.LeftButton
             and not self._item_under(pos)
@@ -169,11 +278,24 @@ class DataflowGraphicsView(QGraphicsView):
             self.verticalScrollBar().setValue(self._pan_v_scroll - delta.y())
             event.accept()
             return
+        vp_pos = event.position().toPoint()
+        scene_pos = self.mapToScene(vp_pos)
+        if self._placement_tool and self._placement_tool.active():
+            self._placement_tool.move_mouse_scene(scene_pos)
+            self.viewport().setCursor(self._placement_hand)
+            event.accept()
+            return
         super().mouseMoveEvent(event)
+        if self._route_tool and self._route_tool.active():
+            self._route_tool.move_mouse_scene(scene_pos)
+            return
         if not self.rubberBandRect().isNull():
             return
-        pos = event.position().toPoint()
-        self._cursor_hint_empty_canvas(pos)
+        if self._route_tool:
+            top = self.itemAt(vp_pos)
+            self._route_tool.hover_free_pin_cursor(scene_pos, vp_pos, top)
+        else:
+            self._cursor_hint_empty_canvas(vp_pos)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._pan_active:
@@ -183,6 +305,29 @@ class DataflowGraphicsView(QGraphicsView):
             self._cursor_hint_empty_canvas(pos)
             event.accept()
             return
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._eat_next_left_release_for_route
+        ):
+            self._eat_next_left_release_for_route = False
+        elif (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._route_tool is not None
+        ):
+            vp_pos = event.position().toPoint()
+            scene_pos = self.mapToScene(vp_pos)
+            top = self.itemAt(vp_pos)
+            if self._route_tool.active():
+                self._route_tool.on_left_release(scene_pos, top)
+                event.accept()
+                self.scene_left_release.emit()
+                self._emit_block_move_finished_if_uniform()
+                return
+            if self._route_tool.try_start_from_release(scene_pos, top):
+                event.accept()
+                self.scene_left_release.emit()
+                self._emit_block_move_finished_if_uniform()
+                return
         super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
             self.scene_left_release.emit()
@@ -210,7 +355,41 @@ class DataflowGraphicsView(QGraphicsView):
             return
         self.block_move_finished.emit(d0.x(), d0.y())
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if self._interaction_locked:
+            event.accept()
+            return
+        if (
+            self._placement_tool
+            and self._placement_tool.active()
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._placement_tool.cancel(emit_cancelled=True)
+            event.accept()
+            return
+        if (
+            self._route_tool
+            and self._route_tool.active()
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._route_tool.cancel()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._interaction_locked:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                event.accept()
+                return
+        if event.key() == Qt.Key.Key_Escape and self._placement_tool and self._placement_tool.active():
+            self._placement_tool.cancel(emit_cancelled=True)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape and self._route_tool and self._route_tool.active():
+            self._route_tool.cancel()
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selection_requested.emit()
             event.accept()
@@ -228,11 +407,15 @@ class DataflowGraphicsView(QGraphicsView):
         super().enterEvent(event)
         if not self._pan_active:
             vp = self.viewport()
-            self._cursor_hint_empty_canvas(vp.mapFromGlobal(QCursor.pos()))
+            if self._placement_tool and self._placement_tool.active():
+                vp.setCursor(self._placement_hand)
+            else:
+                self._cursor_hint_empty_canvas(vp.mapFromGlobal(QCursor.pos()))
 
     def leaveEvent(self, event: QEvent) -> None:
-        if not self._pan_active:
-            self.viewport().setCursor(self._arrow_cursor)
+        if not self._pan_active and not (self._route_tool and self._route_tool.active()):
+            if not (self._placement_tool and self._placement_tool.active()):
+                self.viewport().setCursor(self._arrow_cursor)
         super().leaveEvent(event)
 
     def zoom_percent(self) -> float:
@@ -269,3 +452,42 @@ class DataflowGraphicsView(QGraphicsView):
             self.scale(factor, factor)
             self.zoom_percent_changed.emit(self.zoom_percent())
         event.accept()
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._interaction_locked:
+            event.ignore()
+            return
+        if event.mimeData().hasFormat(VARIABLE_NAME_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._interaction_locked:
+            event.ignore()
+            return
+        if event.mimeData().hasFormat(VARIABLE_NAME_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self._interaction_locked:
+            event.ignore()
+            return
+        md = event.mimeData()
+        if md.hasFormat(VARIABLE_NAME_DRAG_MIME):
+            raw = bytes(md.data(VARIABLE_NAME_DRAG_MIME)).decode("utf-8", errors="strict").strip()
+            if raw:
+                if self._placement_tool and self._placement_tool.active():
+                    self._placement_tool.cancel(emit_cancelled=False)
+                scene_pos = self.mapToScene(event.position().toPoint())
+                try:
+                    cmd = variable_new_instance_command(raw, scene_pos)
+                except InvalidVariableNameError:
+                    event.acceptProposedAction()
+                    return
+                self.placement_command.emit(cmd)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)

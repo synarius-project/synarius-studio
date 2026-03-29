@@ -53,6 +53,11 @@ Synarius is split into two main components:
 - Prefer explicit over implicit behavior
 - Add docstrings where appropriate
 
+### Icons (Synarius Studio)
+
+- Prefer icons from the [KDE Breeze Icons](https://develop.kde.org/frameworks/breeze-icons/) theme (e.g. entries under [Breeze theme icons](https://develop.kde.org/themeicons/breeze/actions/32/)) for toolbars, menus, and other GUI artwork.
+- When you add a Breeze icon, vendor the asset under `src/synarius_studio/icons/`, keep the upstream filename where practical, and include license compliance: ship the library license text from the Breeze Icons repository (`COPYING.LIB`, stored here as `icons/BREEZE_ICONS_COPYING.LIB`) and extend `icons/BREEZE_ICONS_NOTICE.txt` so the set of vendored files and sources stays accurate.
+
 ### Testing
 
 - All new features should include tests

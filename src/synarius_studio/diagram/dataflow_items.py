@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import TYPE_CHECKING
-
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
@@ -23,23 +21,27 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsRectItem,
+    QGraphicsSceneContextMenuEvent,
     QGraphicsSceneHoverEvent,
     QGraphicsSceneMouseEvent,
     QGraphicsSimpleTextItem,
+    QMenu,
     QStyle,
     QStyleOptionGraphicsItem,
     QWidget,
 )
 
 from synarius_core.model import BasicOperator, BasicOperatorType, Connector, Variable
+from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.model.connector_routing import (
     auto_orthogonal_bends,
+    bends_absolute_to_relative,
+    bends_relative_to_absolute,
     orthogonal_drag_segments,
     polyline_for_endpoints,
 )
 
-if TYPE_CHECKING:
-    pass
+from ..theme import selection_highlight_qcolor
 
 # Global UI scale: 100 % nominal view uses 70 % of the former linear size (reverses mistaken 100/70 bump).
 UI_SCALE = 70.0 / 100.0
@@ -47,8 +49,10 @@ UI_SCALE = 70.0 / 100.0
 # Base grid unit for block sizing; connector stroke stays readable at this scale.
 MODULE = 15.0 * UI_SCALE
 VARIABLE_HEIGHT = 2.0 * MODULE
+# Live value text is drawn above the block (outside the box).
+VALUE_LABEL_GAP = 3.0
 # Width not fixed by spec; keeps ~ prior proportion to height (118:38 ≈ 6:2).
-VARIABLE_WIDTH = 6.0 * MODULE
+VARIABLE_WIDTH = 6.0 * MODULE  # default / minimum; instance width from ``variable_diagram_block_width_scene``
 OPERATOR_SIZE = 3.0 * MODULE
 _GLYPH_BASE = OPERATOR_SIZE * (40.0 / 56.0)
 SVG_SYMBOL_SIZE = _GLYPH_BASE * 1.2
@@ -66,8 +70,8 @@ PIN_TRI_HALF_HEIGHT = MODULE * (4.5 / _REF_PIN_MOD) * _PIN_TRI_SCALE
 OPERATOR_GLYPH_STROKE = QColor(22, 22, 28)
 _FILL_BLUE = QColor(36, 104, 220)
 
-# Global selection / “marked” highlight (reassign at runtime to theme).
-MARK_HIGHLIGHT_COLOR = QColor(88, 108, 212, 142)
+# Global selection / “marked” highlight (from ``theme.selection_highlight_qcolor``).
+MARK_HIGHLIGHT_COLOR = selection_highlight_qcolor()
 # Outward extent from the element outline (scene px); same for blocks and connectors.
 MARK_BLOCK_PADDING = 3.0
 MARK_VARIABLE_HIGHLIGHT_RADIUS = max(3.5, MODULE * 0.22)
@@ -335,10 +339,18 @@ class _InputPinItem(QGraphicsObject):
     Input stub to the left of the block edge: horizontal line, then solid black triangle (tip on block edge).
     """
 
-    def __init__(self, parent: QGraphicsObject | None = None) -> None:
+    def __init__(self, pin_name: str, parent: QGraphicsObject | None = None) -> None:
         super().__init__(parent)
+        self._pin_name = pin_name
         self.setZValue(1.0)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setAcceptHoverEvents(True)
+
+    def logical_pin_name(self) -> str:
+        return self._pin_name
+
+    def is_output_pin(self) -> bool:
+        return False
 
     def boundingRect(self) -> QRectF:
         w = PIN_LINE_LENGTH + PIN_TRI_DEPTH
@@ -385,6 +397,13 @@ class _OutputPinItem(QGraphicsObject):
         super().__init__(parent)
         self.setZValue(1.0)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setAcceptHoverEvents(True)
+
+    def logical_pin_name(self) -> str:
+        return "out"
+
+    def is_output_pin(self) -> bool:
+        return True
 
     def boundingRect(self) -> QRectF:
         w = PIN_LINE_LENGTH + PIN_TRI_DEPTH + 2.0
@@ -420,8 +439,15 @@ class _OutputPinItem(QGraphicsObject):
 class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     """Rounded variable block (screenshot-style: wide rectangle, label)."""
 
-    def __init__(self, variable: Variable, parent: QGraphicsRectItem | None = None) -> None:
-        super().__init__(0, 0, VARIABLE_WIDTH, VARIABLE_HEIGHT, parent)
+    def __init__(
+        self,
+        variable: Variable,
+        parent: QGraphicsRectItem | None = None,
+        *,
+        drop_shadow: bool = True,
+    ) -> None:
+        block_w = variable_diagram_block_width_scene(variable.name)
+        super().__init__(0, 0, block_w, VARIABLE_HEIGHT, parent)
         self._variable = variable
         self.setBrush(QColor(250, 250, 248))
         self.setPen(_block_outline_pen(QColor(55, 55, 55)))
@@ -434,7 +460,7 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._label.setBrush(QColor(30, 30, 30))
         self._label.setZValue(2.0)
-        font = _font_for_variable_name(variable.name, VARIABLE_WIDTH, VARIABLE_HEIGHT)
+        font = _font_for_variable_name(variable.name, block_w, VARIABLE_HEIGHT)
         self._label.setFont(font)
         fm = QFontMetricsF(font)
         name = variable.name
@@ -442,21 +468,67 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         # Horizontal: width from metrics (stable centering). Vertical: SimpleTextItem’s rect
         # sits low vs. caps; nudge up so the label reads centered in the block.
         text_w = fm.horizontalAdvance(name)
-        x = (VARIABLE_WIDTH - text_w) / 2
+        x = (block_w - text_w) / 2
         y = (VARIABLE_HEIGHT - br.height()) / 2 - 0.45 * fm.descent()
         self._label.setPos(x, y)
 
-        _apply_light_diagonal_shadow(self)
+        vfont = QFont()
+        # Simulation overlay: slightly larger for readability over the canvas grid.
+        vfont.setPixelSize(max(8, int(MODULE * 1.5)))
+        self._value_label = QGraphicsSimpleTextItem("", self)
+        self._value_label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._value_label.setBrush(QColor(0, 110, 45))
+        self._value_label.setFont(vfont)
+        self._value_label.setZValue(3.0)
+        self._live_value_overlay = False
+        self._value_label.setVisible(False)
+
+        if drop_shadow:
+            _apply_light_diagonal_shadow(self)
 
         cy = VARIABLE_HEIGHT / 2.0
-        self._pin_in = _InputPinItem(self)
+        self._pin_in = _InputPinItem("in", self)
         self._pin_in.setPos(0.0, cy)
         self._pin_out = _OutputPinItem(self)
-        self._pin_out.setPos(VARIABLE_WIDTH, cy)
+        self._pin_out.setPos(block_w, cy)
 
     def controller_select_token(self) -> str:
         """Token for ``select`` in the Controller Command Protocol (unique ``hash_name``)."""
         return self._variable.hash_name
+
+    def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent) -> None:
+        sc = self.scene()
+        from .diagram_scene import SynariusDiagramScene
+
+        if isinstance(sc, SynariusDiagramScene) and sc._simulation_mode:
+            menu = QMenu()
+            act = menu.addAction("Stimulation…")
+            chosen = menu.exec(event.screenPos())
+            if chosen is act:
+                sc.configure_variable_stimulation.emit(self.variable())
+            event.accept()
+            return
+        super().contextMenuEvent(event)
+
+    def live_value_overlay_enabled(self) -> bool:
+        return self._live_value_overlay
+
+    def set_live_value_overlay(self, on: bool) -> None:
+        on = bool(on)
+        if self._live_value_overlay == on:
+            return
+        self.prepareGeometryChange()
+        self._live_value_overlay = on
+        self._value_label.setVisible(on)
+        if not on:
+            self._value_label.setText("")
+
+    def boundingRect(self) -> QRectF:
+        r = QRectF(self.rect())
+        if not self._live_value_overlay:
+            return r
+        vr = self._value_label.mapRectToParent(self._value_label.boundingRect())
+        return r.united(vr)
 
     def paint(
         self,
@@ -479,6 +551,47 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     def variable(self) -> Variable:
         return self._variable
 
+    @staticmethod
+    def format_value_for_display(value: object) -> str:
+        if value is None:
+            return "—"
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, float):
+            if math.isnan(value):
+                return "nan"
+            av = abs(value)
+            if av >= 1e5 or (0 < av < 1e-3):
+                return f"{value:.3e}"
+            s = f"{value:.5g}"
+            return s
+        if isinstance(value, int):
+            return str(value)
+        return str(value)
+
+    def refresh_value_display(self) -> None:
+        if not self._live_value_overlay:
+            return
+        self.prepareGeometryChange()
+        text = self.format_value_for_display(self._variable.value)
+        self._value_label.setText(text)
+        block_w = self.rect().width()
+        fm = QFontMetricsF(self._value_label.font())
+        tw = fm.horizontalAdvance(text)
+        vx = max(0.0, (block_w - tw) / 2)
+        vy = -VALUE_LABEL_GAP - fm.height() + 0.25 * fm.ascent()
+        self._value_label.setPos(vx, vy)
+
+    def set_diagram_editing_enabled(self, enabled: bool) -> None:
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, enabled)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, enabled)
+        self.setAcceptHoverEvents(enabled)
+        # Simulation mode: keep right-click for *Stimulation…* context menu on the scene.
+        if enabled:
+            self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        else:
+            self.setAcceptedMouseButtons(Qt.MouseButton.RightButton)
+
     def connection_point(self, pin_name: str) -> QPointF:
         if pin_name == "out":
             return self._pin_out.mapToScene(self._pin_out.outer_attachment_local())
@@ -491,7 +604,13 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
 class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     """Square operator block with centered vector glyph (+, −, ×, ÷)."""
 
-    def __init__(self, operator: BasicOperator, parent: QGraphicsRectItem | None = None) -> None:
+    def __init__(
+        self,
+        operator: BasicOperator,
+        parent: QGraphicsRectItem | None = None,
+        *,
+        drop_shadow: bool = True,
+    ) -> None:
         super().__init__(0, 0, OPERATOR_SIZE, OPERATOR_SIZE, parent)
         self._operator = operator
         self.setBrush(QColor(245, 243, 238))
@@ -508,14 +627,15 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         )
 
         # Pins: inputs ±0.5·M from former M / 2M so they sit nearer top/bottom; out stays at 1.5M (center).
-        self._pin_in1 = _InputPinItem(self)
+        self._pin_in1 = _InputPinItem("in1", self)
         self._pin_in1.setPos(0.0, 0.5 * MODULE)
-        self._pin_in2 = _InputPinItem(self)
+        self._pin_in2 = _InputPinItem("in2", self)
         self._pin_in2.setPos(0.0, 2.5 * MODULE)
         self._pin_out = _OutputPinItem(self)
         self._pin_out.setPos(OPERATOR_SIZE, 1.5 * MODULE)
 
-        _apply_light_diagonal_shadow(self)
+        if drop_shadow:
+            _apply_light_diagonal_shadow(self)
 
     def controller_select_token(self) -> str:
         return self._operator.hash_name
@@ -541,6 +661,12 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     def operator(self) -> BasicOperator:
         return self._operator
 
+    def set_diagram_editing_enabled(self, enabled: bool) -> None:
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, enabled)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, enabled)
+        self.setAcceptHoverEvents(enabled)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if enabled else Qt.MouseButton.NoButton)
+
     def connection_point(self, pin_name: str) -> QPointF:
         if pin_name == "out":
             return self._pin_out.mapToScene(self._pin_out.outer_attachment_local())
@@ -552,6 +678,20 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
             return self._pin_in1.mapToScene(self._pin_in1.outer_attachment_local())
         r = self.rect()
         return self.mapToScene(r.center())
+
+
+def diagram_pin_from_graphics_item(
+    item: QGraphicsItem | None,
+) -> tuple[_InputPinItem | _OutputPinItem, VariableBlockItem | OperatorBlockItem] | None:
+    """If ``item`` is (or is under) a diagram pin, return ``(pin_item, block_item)``."""
+    while item is not None:
+        if isinstance(item, (_InputPinItem, _OutputPinItem)):
+            parent = item.parentItem()
+            if isinstance(parent, (VariableBlockItem, OperatorBlockItem)):
+                return (item, parent)
+            return None
+        item = item.parentItem()
+    return None
 
 
 def _build_rounded_orthogonal_path(
@@ -717,6 +857,11 @@ class ConnectorEdgeItem(QGraphicsObject):
             return None
         return self._connector.hash_name
 
+    def set_route_editing_enabled(self, enabled: bool) -> None:
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, enabled)
+        self.setAcceptHoverEvents(enabled)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if enabled else Qt.MouseButton.NoButton)
+
     def attach_blocks(
         self,
         src_block: QGraphicsItem,
@@ -784,13 +929,13 @@ class ConnectorEdgeItem(QGraphicsObject):
         self._rebuild_stroke()
 
     def _preview_bends(self) -> list[float]:
-        """Stored route or auto default (not yet persisted)."""
+        """Absolute-diagram bend list for hit-testing / drag (stored bends are source-relative)."""
         if self._connector is None:
             return []
-        if self._connector._orthogonal_bends:
-            return list(self._connector._orthogonal_bends)
         sx, sy = self._p1.x(), self._p1.y()
         tx, ty = self._p2.x(), self._p2.y()
+        if self._connector._orthogonal_bends:
+            return bends_relative_to_absolute(sx, sy, list(self._connector._orthogonal_bends))
         return auto_orthogonal_bends(sx, sy, tx, ty)
 
     def _pick_bend_at(self, scene_pos: QPointF) -> tuple[int, str] | None:
@@ -852,7 +997,7 @@ class ConnectorEdgeItem(QGraphicsObject):
                 sx, sy = self._p1.x(), self._p1.y()
                 tx, ty = self._p2.x(), self._p2.y()
                 if self._connector._orthogonal_bends:
-                    working = list(self._connector._orthogonal_bends)
+                    working = bends_relative_to_absolute(sx, sy, list(self._connector._orthogonal_bends))
                 else:
                     working = auto_orthogonal_bends(sx, sy, tx, ty)
                 if not working or not (0 <= bend_i < len(working)):
@@ -903,13 +1048,19 @@ class ConnectorEdgeItem(QGraphicsObject):
         if event.button() == Qt.MouseButton.LeftButton and self._bend_drag is not None:
             final_bends = list(self._bend_drag_local) if self._bend_drag_local is not None else None
             c = self._connector
+            sx, sy = self._p1.x(), self._p1.y()
             self.ungrabMouse()
             self._bend_drag = None
             self._bend_drag_local = None
+            rel_final = (
+                bends_absolute_to_relative(sx, sy, final_bends)
+                if final_bends is not None
+                else None
+            )
             if (
-                final_bends is not None
+                rel_final is not None
                 and c is not None
-                and not _bends_list_equal(final_bends, list(c._orthogonal_bends))
+                and not _bends_list_equal(rel_final, list(c._orthogonal_bends))
             ):
                 self._apply_bends_list(final_bends)
             self._rebuild_stroke()

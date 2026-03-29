@@ -1,0 +1,19 @@
+Breeze Icons (vendored subset)
+==============================
+
+The following files are taken from KDE Breeze Icons (KDE Frameworks):
+
+  - document-open-folder-symbolic.svg  (actions/32)
+  - document-save-symbolic.svg         (actions/32)
+  - edit-undo-symbolic.svg             (actions/32)
+  - edit-redo-symbolic.svg             (actions/32)
+  - edit-undo-symbolic.svg             (actions/32)
+  - edit-redo-symbolic.svg             (actions/32)
+
+Upstream repository: https://invent.kde.org/frameworks/breeze-icons
+Framework overview:  https://develop.kde.org/frameworks/breeze-icons/
+Theme icon gallery:  https://develop.kde.org/themeicons/breeze/actions/32/
+
+These icons are licensed under the GNU Lesser General Public License.
+The full license text from the upstream tree is shipped alongside as
+BREEZE_ICONS_COPYING.LIB (upstream file COPYING.LIB).
