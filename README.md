@@ -1,5 +1,7 @@
 # synarius-studio (SN Studio)
 
+![Synarius title image](docs/_static/synarius-title.png)
+
 Graphical simulation tool with a PySide6 GUI for Synarius.
 
 ## Try out!
