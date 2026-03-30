@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.model import BasicOperator, BasicOperatorType, Connector, Variable
+from synarius_core.model import BasicOperator, BasicOperatorType, Connector, DataViewer, Variable
 from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.model.connector_routing import (
     auto_orthogonal_bends,
@@ -61,11 +61,16 @@ SVG_SYMBOL_SIZE = _GLYPH_BASE * 1.2
 CONNECTOR_LINE_WIDTH = 1.35
 BLOCK_OUTLINE_WIDTH = 2.0 * CONNECTOR_LINE_WIDTH
 _REF_PIN_MOD = 19.0  # legacy reference for pin proportions vs MODULE
-PIN_LINE_LENGTH = MODULE * (9.0 / _REF_PIN_MOD)
+# Longer horizontal stubs (variables/operators).
+PIN_LINE_LENGTH = MODULE * (15.0 / _REF_PIN_MOD)
 # Arrowhead triangles: +100% vs baseline (depth × height of tip).
 _PIN_TRI_SCALE = 2.0
 PIN_TRI_DEPTH = MODULE * (6.0 / _REF_PIN_MOD) * _PIN_TRI_SCALE
 PIN_TRI_HALF_HEIGHT = MODULE * (4.5 / _REF_PIN_MOD) * _PIN_TRI_SCALE
+# Extra stub segment in simulation mode for large stimulate/measure markers.
+PIN_SIM_EXTENSION = MODULE * 1.2
+SIM_PIN_GREEN = QColor(0, 128, 48)
+SIM_PIN_GREEN_DARK = QColor(0, 82, 32)
 
 OPERATOR_GLYPH_STROKE = QColor(22, 22, 28)
 _FILL_BLUE = QColor(36, 104, 220)
@@ -78,7 +83,7 @@ MARK_VARIABLE_HIGHLIGHT_RADIUS = max(3.5, MODULE * 0.22)
 MARK_OPERATOR_HIGHLIGHT_RADIUS = max(2.5, MODULE * 0.12)
 # Connector hit target: line + same padding as blocks + small comfort margin.
 _MARK_CONNECTOR_HIT_SLACK = 8.0
-# Hit-test radius around a draggable leg (scene px); PyLinX uses broad segment quads.
+# Hit-test radius around a draggable leg (scene px); broad segment quads.
 _CONNECTOR_BEND_DRAG_HIT = 12.0
 _CONNECTOR_BEND_DRAG_HIT_SQ = _CONNECTOR_BEND_DRAG_HIT * _CONNECTOR_BEND_DRAG_HIT
 
@@ -337,6 +342,7 @@ def _font_for_variable_name(name: str, max_width: float, max_height: float) -> Q
 class _InputPinItem(QGraphicsObject):
     """
     Input stub to the left of the block edge: horizontal line, then solid black triangle (tip on block edge).
+    In simulation mode, optional green down-arrow (stimulate) on an extended outer segment.
     """
 
     def __init__(self, pin_name: str, parent: QGraphicsObject | None = None) -> None:
@@ -345,6 +351,7 @@ class _InputPinItem(QGraphicsObject):
         self.setZValue(1.0)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setAcceptHoverEvents(True)
+        self._show_stim_arrow = False
 
     def logical_pin_name(self) -> str:
         return self._pin_name
@@ -352,12 +359,22 @@ class _InputPinItem(QGraphicsObject):
     def is_output_pin(self) -> bool:
         return False
 
+    def configure_sim_input(self, canvas_sim_on: bool, stimulated: bool) -> None:
+        show = bool(canvas_sim_on and stimulated)
+        if show == self._show_stim_arrow:
+            return
+        self.prepareGeometryChange()
+        self._show_stim_arrow = show
+        self.update()
+
     def boundingRect(self) -> QRectF:
         w = PIN_LINE_LENGTH + PIN_TRI_DEPTH
-        h = PIN_TRI_HALF_HEIGHT * 2.0 + 4.0
-        return QRectF(-w, -h / 2.0, w, h)
+        base_h = PIN_TRI_HALF_HEIGHT * 2.0 + 4.0
+        down = MODULE * 1.05 if self._show_stim_arrow else 0.0
+        return QRectF(-w, -base_h / 2.0, w, base_h + down)
 
     def outer_attachment_local(self) -> QPointF:
+        # Always use the base pin length so connectors do not move when stimulation markers appear.
         return QPointF(-(PIN_LINE_LENGTH + PIN_TRI_DEPTH), 0.0)
 
     def paint(
@@ -371,8 +388,9 @@ class _InputPinItem(QGraphicsObject):
         pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(pen)
         e = PIN_TRI_DEPTH
+        total = PIN_LINE_LENGTH
         painter.drawLine(
-            QPointF(-(PIN_LINE_LENGTH + e), 0.0),
+            QPointF(-(total + e), 0.0),
             QPointF(-e, 0.0),
         )
         painter.setBrush(QColor(35, 35, 35))
@@ -386,11 +404,38 @@ class _InputPinItem(QGraphicsObject):
                 ]
             )
         )
+        if self._show_stim_arrow:
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # Arrow is centered just outside the pin's triangle tip.
+            # Spitze endet direkt am Pin (y = 0); Schaft + Dreieck zeigen nach unten.
+            cx = -(total + e) + MODULE * 0.12
+            tip_y = 0.0
+            base_y = MODULE * 0.55
+            half_w = MODULE * 0.4
+            # Shaft (line) von der Pin-Basis bis zur Dreiecks-Basis.
+            shaft_pen = QPen(SIM_PIN_GREEN, max(3.0, CONNECTOR_LINE_WIDTH * 1.8))
+            shaft_pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+            painter.setPen(shaft_pen)
+            painter.drawLine(QPointF(cx, -2 * base_y), QPointF(cx, - base_y))
+            # Triangle tip.
+            tri = QPolygonF(
+                [
+                    QPointF(cx, tip_y),
+                    QPointF(cx - half_w, - base_y),
+                    QPointF(cx + half_w, - base_y),
+                ]
+            )
+            painter.setBrush(SIM_PIN_GREEN)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawPolygon(tri)
+            painter.restore()
 
 
 class _OutputPinItem(QGraphicsObject):
     """
     Output stub to the right of the block edge: outlined white triangle (tip right), then horizontal line.
+    In simulation mode, optional green up-arrow + viewer id labels on an extended outer segment (measure).
     """
 
     def __init__(self, parent: QGraphicsObject | None = None) -> None:
@@ -398,6 +443,7 @@ class _OutputPinItem(QGraphicsObject):
         self.setZValue(1.0)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setAcceptHoverEvents(True)
+        self._measure_ids: list[int] = []
 
     def logical_pin_name(self) -> str:
         return "out"
@@ -405,12 +451,27 @@ class _OutputPinItem(QGraphicsObject):
     def is_output_pin(self) -> bool:
         return True
 
+    def configure_sim_output(self, canvas_sim_on: bool, measure_ids: list[int]) -> None:
+        ids = [int(x) for x in measure_ids] if measure_ids else []
+        if ids == self._measure_ids:
+            return
+        self.prepareGeometryChange()
+        self._measure_ids = ids
+        self.update()
+
     def boundingRect(self) -> QRectF:
+        label_h = 0.0
+        up = 0.0
+        if self._measure_ids:
+            up = MODULE * 1.0
+            label_h = max(MODULE * 1.15, 12.0)
         w = PIN_LINE_LENGTH + PIN_TRI_DEPTH + 2.0
-        h = PIN_TRI_HALF_HEIGHT * 2.0 + 4.0
-        return QRectF(-1.0, -h / 2.0, w, h)
+        base_h = PIN_TRI_HALF_HEIGHT * 2.0 + 4.0
+        h = base_h + label_h + up
+        return QRectF(-1.0, -h / 2.0 - up, w, h)
 
     def outer_attachment_local(self) -> QPointF:
+        # Always use the base pin length so connectors do not move when measurement markers appear.
         return QPointF(PIN_TRI_DEPTH + PIN_LINE_LENGTH, 0.0)
 
     def paint(
@@ -433,7 +494,66 @@ class _OutputPinItem(QGraphicsObject):
         painter.setBrush(QColor(255, 255, 255))
         painter.setPen(pen)
         painter.drawPolygon(tri)
-        painter.drawLine(QPointF(e, 0.0), QPointF(e + PIN_LINE_LENGTH, 0.0))
+        total = PIN_LINE_LENGTH
+        painter.drawLine(QPointF(e, 0.0), QPointF(e + total, 0.0))
+        if self._measure_ids:
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # Arrow is centered just outside the pin's triangle tip.
+            # Spitze endet direkt am Pin (y = 0); Schaft + Dreieck zeigen nach oben.
+            cx = e + total - MODULE * 0.12
+            tip_y = 0.0
+            base_y = -MODULE * 0.55
+            half_w = MODULE * 0.4
+            # Shaft (line) von der Pin-Basis bis zur Dreiecks-Basis.
+            shaft_pen = QPen(SIM_PIN_GREEN, max(3.0, CONNECTOR_LINE_WIDTH * 1.8))
+            shaft_pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+            painter.setPen(shaft_pen)
+            painter.drawLine(QPointF(cx, 0.0), QPointF(cx, base_y))
+            tri_g = QPolygonF(
+                [
+                    QPointF(cx, tip_y + 2 * base_y),
+                    QPointF(cx - half_w, base_y),
+                    QPointF(cx + half_w, base_y),
+                ]
+            )
+            painter.setBrush(SIM_PIN_GREEN)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawPolygon(tri_g)
+            lab = ",".join(str(i) for i in self._measure_ids)
+            f = QFont()
+            f.setWeight(QFont.Weight.Bold)
+            f.setPixelSize(max(11, int(MODULE * 1.05)))
+            painter.setFont(f)
+            painter.setPen(QPen(SIM_PIN_GREEN))
+            fm = QFontMetricsF(f)
+            tw = fm.horizontalAdvance(lab)
+            ty = tip_y - fm.height() - MODULE 
+            painter.drawText(QPointF(cx - tw / 2, ty + fm.ascent()), lab)
+            painter.restore()
+
+
+def _variable_is_stimulated(variable: Variable) -> bool:
+    try:
+        return str(variable.get("stim_kind")).strip().lower() not in ("", "none")
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _variable_measure_ids(variable: Variable) -> list[int]:
+    try:
+        raw = variable.get("dataviewer_measure_ids")
+    except (KeyError, TypeError, ValueError):
+        return []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[int] = []
+    for x in raw:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
@@ -501,14 +621,29 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         from .diagram_scene import SynariusDiagramScene
 
         if isinstance(sc, SynariusDiagramScene) and sc._simulation_mode:
+            v = self.variable()
+            was_stim = _variable_is_stimulated(v)
+            was_meas = bool(_variable_measure_ids(v))
             menu = QMenu()
-            act = menu.addAction("Stimulation…")
+            a_stim = menu.addAction("Stimulate")
+            a_stim.setCheckable(True)
+            a_stim.setChecked(was_stim)
+            a_meas = menu.addAction("Measure")
+            a_meas.setCheckable(True)
+            a_meas.setChecked(was_meas)
             chosen = menu.exec(event.screenPos())
-            if chosen is act:
-                sc.configure_variable_stimulation.emit(self.variable())
+            if chosen is a_stim:
+                sc.variable_sim_binding_toggle.emit(v, "stimulate", a_stim.isChecked())
+            elif chosen is a_meas:
+                sc.variable_sim_binding_toggle.emit(v, "measure", a_meas.isChecked())
             event.accept()
             return
         super().contextMenuEvent(event)
+
+    def refresh_sim_pin_overlay(self, canvas_sim_on: bool) -> None:
+        v = self._variable
+        self._pin_in.configure_sim_input(canvas_sim_on, _variable_is_stimulated(v))
+        self._pin_out.configure_sim_output(canvas_sim_on, _variable_measure_ids(v))
 
     def live_value_overlay_enabled(self) -> bool:
         return self._live_value_overlay
@@ -516,12 +651,14 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     def set_live_value_overlay(self, on: bool) -> None:
         on = bool(on)
         if self._live_value_overlay == on:
+            self.refresh_sim_pin_overlay(on)
             return
         self.prepareGeometryChange()
         self._live_value_overlay = on
         self._value_label.setVisible(on)
         if not on:
             self._value_label.setText("")
+        self.refresh_sim_pin_overlay(on)
 
     def boundingRect(self) -> QRectF:
         r = QRectF(self.rect())
@@ -678,6 +815,116 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
             return self._pin_in1.mapToScene(self._pin_in1.outer_attachment_local())
         r = self.rect()
         return self.mapToScene(r.center())
+
+
+class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
+    """Data-viewer badge im Stil der übrigen Blöcke (weißer Block mit Scope-Bildschirm)."""
+
+    DV_W = 4.75 * MODULE
+    DV_H = 3.95 * MODULE
+
+    def __init__(
+        self,
+        dataviewer: DataViewer,
+        parent: QGraphicsRectItem | None = None,
+        *,
+        drop_shadow: bool = True,
+    ) -> None:
+        super().__init__(0, 0, self.DV_W, self.DV_H, parent)
+        self._dataviewer = dataviewer
+        self.setBrush(Qt.BrushStyle.NoBrush)
+        self.setPen(QPen(Qt.PenStyle.NoPen))
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
+        self.setVisible(False)
+
+        self._vid_str = str(int(dataviewer.get("dataviewer_id")))
+
+        if drop_shadow:
+            _apply_light_diagonal_shadow(self)
+
+    def dataviewer(self) -> DataViewer:
+        return self._dataviewer
+
+    def controller_select_token(self) -> str:
+        return self._dataviewer.hash_name
+
+    def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # type: ignore[override]
+        scene = self.scene()
+        if scene is not None:
+            try:
+                # Typ wird zur Laufzeit geprüft; Import hier wäre zirkulär.
+                from .diagram_scene import SynariusDiagramScene
+
+                if isinstance(scene, SynariusDiagramScene):
+                    scene.open_dataviewer_requested.emit(self._dataviewer)
+                    event.accept()
+                    return
+            except Exception:
+                pass
+        super().mouseDoubleClickEvent(event)
+
+    def set_sim_canvas_visible(self, sim_on: bool) -> None:
+        sim_on = bool(sim_on)
+        self.setVisible(sim_on)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, sim_on)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, sim_on)
+        self.setAcceptHoverEvents(sim_on)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if sim_on else Qt.MouseButton.NoButton)
+
+    def set_diagram_editing_enabled(self, _enabled: bool) -> None:
+        """Visibility/interaction are driven by ``set_sim_canvas_visible`` from the main window."""
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = self.rect()
+        if self.isSelected():
+            pad = MARK_BLOCK_PADDING * 0.85
+            hr = r.adjusted(-pad, -pad, pad, pad)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(MARK_HIGHLIGHT_COLOR)
+            painter.drawRoundedRect(hr, MARK_OPERATOR_HIGHLIGHT_RADIUS * 1.1, MARK_OPERATOR_HIGHLIGHT_RADIUS * 1.1)
+
+        # Äußerer Block: wie Variable/Operator – weißer Block mit dunklem, relativ dickem Rand.
+        outer_inset = MODULE * 0.25
+        outer = r.adjusted(outer_inset, outer_inset, -outer_inset, -outer_inset)
+        painter.setBrush(QColor(250, 250, 248))
+        painter.setPen(_block_outline_pen(QColor(55, 55, 55)))
+        radius = MODULE * 0.4
+        painter.drawRoundedRect(outer, radius, radius)
+
+        # Innerer „Bildschirm“: weißes Rechteck mit dünnerem Rand, etwas nach oben versetzt
+        # (angelehnt an Scope-Darstellung, aber im Studio-Stil gehalten).
+        screen_margin_h = MODULE * 0.55
+        screen_margin_v_top = MODULE * 0.45
+        screen_margin_v_bottom = MODULE * 0.8
+        screen = outer.adjusted(
+            screen_margin_h,
+            screen_margin_v_top,
+            -screen_margin_h,
+            -screen_margin_v_bottom,
+        )
+        thin_pen = QPen(QColor(80, 80, 80), CONNECTOR_LINE_WIDTH)
+        painter.setPen(thin_pen)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawRoundedRect(screen, MODULE * 0.22, MODULE * 0.22)
+
+        # DataViewer-Nummer mittig im Bildschirm.
+        font = QFont()
+        font.setWeight(QFont.Weight.DemiBold)
+        font.setPixelSize(max(16, int(MODULE * 1.6)))
+        painter.setFont(font)
+        painter.setPen(QColor(40, 40, 40))
+        painter.drawText(screen, int(Qt.AlignmentFlag.AlignCenter), self._vid_str)
+        painter.restore()
 
 
 def diagram_pin_from_graphics_item(

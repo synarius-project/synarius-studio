@@ -25,7 +25,7 @@ from synarius_core.variable_naming import InvalidVariableNameError
 from ..theme import SELECTION_HIGHLIGHT_TEXT, selection_highlight_qcolor
 
 from .connector_interactive import ConnectorRouteTool
-from .dataflow_items import OperatorBlockItem, VariableBlockItem
+from .dataflow_items import DataViewerBlockItem, OperatorBlockItem, VariableBlockItem
 from .placement_interactive import (
     VARIABLE_NAME_DRAG_MIME,
     CanvasPlacementTool,
@@ -34,7 +34,7 @@ from .placement_interactive import (
 
 # Light yellow canvas (frame + scene); single source of truth for diagram area color.
 CANVAS_BACKGROUND_COLOR = "#fffef2"
-# PyLinX prototype: PX_Templ.color.backgroundSim — QColor(236, 255, 236).
+# Simulation canvas background — #ecffec (light green), QColor(236, 255, 236).
 CANVAS_SIMULATION_BACKGROUND_COLOR = "#ecffec"
 
 # Shared with console so diagram and terminal use identical scrollbar chrome (Qt style sheet).
@@ -167,14 +167,11 @@ class DataflowGraphicsView(QGraphicsView):
         """Simulation / view-only mode: no editing; Ctrl+drag on empty canvas still pans."""
         self._interaction_locked = bool(locked)
         if locked:
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
             if self._placement_tool:
                 self._placement_tool.cancel(emit_cancelled=False)
             if self._route_tool:
                 self._route_tool.cancel()
             self.viewport().setCursor(self._arrow_cursor)
-        else:
-            self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self._pan_active = False
 
     def attach_connector_route_tool(self, controller: MinimalController) -> None:
@@ -213,21 +210,41 @@ class DataflowGraphicsView(QGraphicsView):
         else:
             self.viewport().setCursor(self._arrow_cursor)
 
+    @staticmethod
+    def _dataviewer_block_under(view: QGraphicsView, pos: QPoint) -> DataViewerBlockItem | None:
+        it = view.itemAt(pos)
+        while it is not None:
+            if isinstance(it, DataViewerBlockItem):
+                return it
+            it = it.parentItem()
+        return None
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
         if self._interaction_locked:
-            if (
-                event.button() == Qt.MouseButton.LeftButton
-                and not self._item_under(pos)
-                and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-            ):
-                self._move_anchor_snapshot = None
-                self._pan_active = True
-                self._pan_viewport_pos = pos
-                self._pan_h_scroll = self.horizontalScrollBar().value()
-                self._pan_v_scroll = self.verticalScrollBar().value()
-                self.viewport().setCursor(self._closed_hand)
-                event.accept()
+            dv = self._dataviewer_block_under(self, pos)
+            if event.button() == Qt.MouseButton.LeftButton and dv is not None:
+                super().mousePressEvent(event)
+                if self.scene() is not None:
+                    self._move_anchor_snapshot = {
+                        id(it): QPointF(it.pos())
+                        for it in self.scene().selectedItems()
+                        if isinstance(it, DataViewerBlockItem)
+                    }
+                return
+            if event.button() == Qt.MouseButton.LeftButton:
+                if not self._item_under(pos) and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    # Ctrl+Drag on leerer Fläche: panning, auch im Simulationsmodus.
+                    self._move_anchor_snapshot = None
+                    self._pan_active = True
+                    self._pan_viewport_pos = pos
+                    self._pan_h_scroll = self.horizontalScrollBar().value()
+                    self._pan_v_scroll = self.verticalScrollBar().value()
+                    self.viewport().setCursor(self._closed_hand)
+                    event.accept()
+                    return
+                # Sonst Standardverhalten von QGraphicsView erlauben (z.B. Rubberband-Selektion für DataViewer).
+                super().mousePressEvent(event)
                 return
             event.accept()
             return
@@ -267,7 +284,7 @@ class DataflowGraphicsView(QGraphicsView):
             self._move_anchor_snapshot = {
                 id(it): QPointF(it.pos())
                 for it in self.scene().selectedItems()
-                if isinstance(it, (VariableBlockItem, OperatorBlockItem))
+                if isinstance(it, (VariableBlockItem, OperatorBlockItem, DataViewerBlockItem))
             }
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -277,6 +294,9 @@ class DataflowGraphicsView(QGraphicsView):
             self.horizontalScrollBar().setValue(self._pan_h_scroll - delta.x())
             self.verticalScrollBar().setValue(self._pan_v_scroll - delta.y())
             event.accept()
+            return
+        if self._interaction_locked:
+            super().mouseMoveEvent(event)
             return
         vp_pos = event.position().toPoint()
         scene_pos = self.mapToScene(vp_pos)
@@ -357,6 +377,13 @@ class DataflowGraphicsView(QGraphicsView):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if self._interaction_locked:
+            # Im Simulationsmodus sind nur DataViewer interaktiv; Doppelklick soll dort durchgehen,
+            # damit das Item ein Widget öffnen kann.
+            pos = event.position().toPoint()
+            dv = self._dataviewer_block_under(self, pos)
+            if event.button() == Qt.MouseButton.LeftButton and dv is not None:
+                super().mouseDoubleClickEvent(event)
+                return
             event.accept()
             return
         if (
@@ -378,10 +405,6 @@ class DataflowGraphicsView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self._interaction_locked:
-            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-                event.accept()
-                return
         if event.key() == Qt.Key.Key_Escape and self._placement_tool and self._placement_tool.active():
             self._placement_tool.cancel(emit_cancelled=True)
             event.accept()

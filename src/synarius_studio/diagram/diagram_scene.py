@@ -1,4 +1,4 @@
-"""Diagram scene with simulation-mode flag and stimulation configuration signal."""
+"""Diagram scene with simulation-mode flag and variable binding signals."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ from PySide6.QtWidgets import QGraphicsScene
 
 
 class SynariusDiagramScene(QGraphicsScene):
-    """Signals when the user configures stimulation on a variable (from the variable item context menu)."""
+    """Context-menu results from variable blocks in simulation mode (stimulate / measure)."""
 
-    configure_variable_stimulation = Signal(object)
+    variable_sim_binding_toggle = Signal(object, str, bool)
+    open_dataviewer_requested = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

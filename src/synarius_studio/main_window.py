@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import re
 import shlex
+import sys
+import time
 from dataclasses import dataclass, field
 from uuid import UUID
+import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
@@ -38,7 +41,7 @@ from pathlib import Path
 from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
 from synarius_core.dataflow_sim import SimpleRunEngine
-from synarius_core.model import Connector, Variable
+from synarius_core.model import Connector, DataViewer, Variable
 
 from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, build_resources_panel
 from .theme import (
@@ -51,7 +54,13 @@ from .theme import (
 )
 from .variables_tab_panel import build_variables_tab_panel
 from .diagram import DataflowGraphicsView, populate_scene_from_model
-from .diagram.dataflow_items import UI_SCALE, ConnectorEdgeItem, OperatorBlockItem, VariableBlockItem
+from .diagram.dataflow_items import (
+    UI_SCALE,
+    ConnectorEdgeItem,
+    DataViewerBlockItem,
+    OperatorBlockItem,
+    VariableBlockItem,
+)
 from .diagram.diagram_scene import SynariusDiagramScene
 from .diagram.dataflow_canvas import (
     CANVAS_BACKGROUND_COLOR,
@@ -59,6 +68,7 @@ from .diagram.dataflow_canvas import (
     SCROLLBAR_STYLE_QSS,
 )
 from .diagram.dataflow_layout import SCENE_RECT, open_syn_dialog_start_dir
+from .dataviewer_select_dialog import SelectDataViewerDialog
 from .stimulation_dialog import StimulationDialog
 from .svg_icons import icon_from_inverted_standard_icon, icon_from_tinted_svg_file, qicon_panel_toggle_for_toolbar
 
@@ -207,6 +217,11 @@ class MainWindow(QMainWindow):
         self._sim_mode_suppress_action = False
         self._sim_play_suppress_action = False
         self._last_applied_simulation_mode: bool | None = None
+        # Laufende dynamische DataViewer-Fenster pro Viewer-ID.
+        self._live_dataviewers: dict[int, QWidget] = {}
+        self._live_series_buffers: dict[str, tuple[list[float], list[float]]] = {}
+        self._live_series_t0 = time.perf_counter()
+        self._live_viewer_autorange_tick = 0
 
         central = QWidget(self)
         root_layout = QVBoxLayout(central)
@@ -215,7 +230,8 @@ class MainWindow(QMainWindow):
 
         self._diagram_scene = SynariusDiagramScene(self)
         self._diagram_scene.setSceneRect(SCENE_RECT)
-        self._diagram_scene.configure_variable_stimulation.connect(self._on_configure_variable_stimulation)
+        self._diagram_scene.variable_sim_binding_toggle.connect(self._on_variable_sim_binding_toggle)
+        self._diagram_scene.open_dataviewer_requested.connect(self._on_open_dataviewer_requested)
         # Strong refs to scene wrappers from ``items()``; PySide6 may drop items when these go away.
         self._diagram_item_refs: list[QGraphicsItem] = []
 
@@ -279,7 +295,7 @@ class MainWindow(QMainWindow):
 
         self.sim_mode_action = QAction("Simulation", self)
         self.sim_mode_action.setCheckable(True)
-        self.sim_mode_action.setToolTip("Runs: set @main.simulation_mode true|false; stays checked while active (PyLinX-style).")
+        self.sim_mode_action.setToolTip("Runs: set @main.simulation_mode true|false; stays checked while active.")
         self.sim_mode_action.toggled.connect(self._on_sim_mode_action_toggled)
 
         _st = QApplication.instance().style() if QApplication.instance() else self.style()
@@ -563,6 +579,12 @@ class MainWindow(QMainWindow):
             sim_on = False
         self._apply_diagram_edit_capabilities(not sim_on)
         self._sync_live_value_overlays(sim_on)
+        self._sync_dataviewer_items_visibility(sim_on)
+
+    def _sync_dataviewer_items_visibility(self, sim_on: bool) -> None:
+        for it in self._diagram_item_refs:
+            if isinstance(it, DataViewerBlockItem):
+                it.set_sim_canvas_visible(sim_on)
 
     def _sync_live_value_overlays(self, sim_on: bool) -> None:
         for it in self._diagram_item_refs:
@@ -617,6 +639,7 @@ class MainWindow(QMainWindow):
         self._diagram_scene.setBackgroundBrush(QColor(chrome))
         self._apply_diagram_edit_capabilities(not on)
         self._sync_live_value_overlays(on)
+        self._sync_dataviewer_items_visibility(on)
         # Global toolbar: Play stays enabled in sim mode (checked while the timer runs).
         self.play_action.setEnabled(on)
         self.stop_action.setEnabled(on and self._simulation_running)
@@ -644,13 +667,84 @@ class MainWindow(QMainWindow):
         cmd = f"set @main.simulation_mode {'true' if checked else 'false'}"
         self._execute_controller_line_for_ui(cmd)
 
-    def _on_configure_variable_stimulation(self, variable: object) -> None:
+    def _on_variable_sim_binding_toggle(self, variable: object, action: str, new_on: bool) -> None:
         if not isinstance(variable, Variable):
             return
-        dlg = StimulationDialog(variable, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        v = variable
+        if action == "stimulate":
+            was = str(v.get("stim_kind")).strip().lower() not in ("", "none")
+            if new_on and not was:
+                dlg = StimulationDialog(v, self)
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    self._refresh_diagram()
+                    return
+                self._run_protocol_lines_as_console(dlg.protocol_commands())
+            elif not new_on and was:
+                h = shlex.quote(v.hash_name)
+                self._run_protocol_lines_as_console(
+                    [
+                        f"set {h}.stim_kind none",
+                        f"set {h}.stim_p0 0",
+                        f"set {h}.stim_p1 1",
+                        f"set {h}.stim_p2 1",
+                        f"set {h}.stim_p3 0",
+                    ]
+                )
+            self._refresh_diagram()
             return
-        self._run_protocol_lines_as_console(dlg.protocol_commands())
+        if action == "measure":
+            try:
+                raw = v.get("dataviewer_measure_ids")
+            except (KeyError, TypeError, ValueError):
+                raw = []
+            was_meas = bool(raw) if isinstance(raw, (list, tuple)) else bool(raw)
+            if not new_on:
+                if was_meas:
+                    h = shlex.quote(v.hash_name)
+                    self._run_protocol_lines_as_console([f"set {h}.dataviewer_measure_ids []"])
+                self._refresh_diagram()
+                return
+            dlg = SelectDataViewerDialog(self._controller.model, v, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                self._refresh_diagram()
+                return
+            self._apply_measure_selection_from_dialog(v, dlg)
+            self._refresh_diagram()
+
+    def _apply_measure_selection_from_dialog(self, v: Variable, dlg: SelectDataViewerDialog) -> None:
+        model = self._controller.model
+        ids = list(dlg.selected_viewer_ids())
+        new_id: int | None = None
+        if dlg.want_new_viewer():
+            try:
+                hn_raw = self._controller.execute("new DataViewer 50 50")
+            except CommandError as exc:
+                self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+                return
+            hn = str(hn_raw or "").strip()
+            if hn:
+                for node in model.iter_objects():
+                    if node.hash_name == hn and hasattr(node, "get"):
+                        try:
+                            new_id = int(node.get("dataviewer_id"))
+                        except (KeyError, TypeError, ValueError):
+                            new_id = None
+                        break
+            if new_id is not None:
+                ids.append(new_id)
+        ids = sorted({int(x) for x in ids})
+        h = shlex.quote(v.hash_name)
+        if not ids:
+            self._run_protocol_lines_as_console([f"set {h}.dataviewer_measure_ids []"])
+            return
+        id_lit = "[" + ",".join(str(i) for i in ids) + "]"
+        last_id = new_id if new_id is not None else ids[-1]
+        self._run_protocol_lines_as_console(
+            [
+                f"set {h}.dataviewer_measure_ids {id_lit}",
+                f"set @main.last_selected_dataviewer_id {last_id}",
+            ]
+        )
 
     def _run_protocol_lines_as_console(self, lines: list[str]) -> None:
         prompt = str(self._controller.current.get("prompt_path"))
@@ -732,6 +826,197 @@ class MainWindow(QMainWindow):
             return
         self._run_engine.step()
         self._refresh_variable_value_labels()
+        self._append_live_series_samples()
+        self._update_live_dataviewers()
+
+    def _on_open_dataviewer_requested(self, dv: DataViewer) -> None:
+        """Doppelklick auf DataViewer: echtes Synarius-DataViewer-Widget öffnen/fokussieren."""
+        try:
+            vid = int(dv.get("dataviewer_id"))
+        except Exception:
+            return
+        if vid in self._live_dataviewers:
+            w = self._live_dataviewers[vid]
+            w.show()
+            w.raise_()
+            w.activateWindow()
+            return
+
+        # Variablen ermitteln, die an diesen DataViewer gebunden sind.
+        variables = self._bound_variables_for_dataviewer_id(vid)
+        names = [str(v.name) for v in variables]
+
+        # Das Dataviewer-Paket liegt im Monorepo unter ``synarius-apps/src`` und ist im Studio-Run
+        # nicht zwingend installiert. Für die Integration im Repo fügen wir den Pfad hinzu.
+        try:
+            repo_root = Path(__file__).resolve().parents[3]
+            apps_src = repo_root / "synarius-apps" / "src"
+            if apps_src.exists():
+                s = str(apps_src)
+                if s not in sys.path:
+                    sys.path.insert(0, s)
+        except Exception:
+            pass
+
+        try:
+            from synarius_dataviewer.widgets.data_viewer import DataViewerShell
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Dataviewer", f"Dataviewer widget not available:\n{exc}")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"DataViewer {vid}")
+        dlg.setWindowFlags(
+            dlg.windowFlags()
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        shell = DataViewerShell(
+            self._resolve_live_series,
+            dlg,
+            enable_walking_axis=True,
+            resolve_channel_unit=self._resolve_live_unit,
+            mode="dynamic",
+            legend_visible_at_start=True,
+        )
+        layout.addWidget(shell, 1)
+        for name in names:
+            self._ensure_live_series_seed(name)
+            try:
+                shell.viewer.add_channel(name)
+            except Exception:
+                continue
+
+        # Simulation: Walking axis aktivieren und einmal Autoscale, damit Signale sofort sichtbar sind.
+        try:
+            wa = getattr(shell.viewer, "_walk_action", None)
+            if wa is not None:
+                wa.setChecked(True)
+            scope = getattr(shell.viewer, "_scope", None)
+            if scope is not None:
+                scope.auto_range()
+        except Exception:
+            pass
+
+        def _on_closed(_result: int) -> None:
+            self._live_dataviewers.pop(vid, None)
+
+        dlg.finished.connect(_on_closed)
+        self._live_dataviewers[vid] = dlg
+        dlg._dv_var_names = names  # type: ignore[attr-defined]
+        dlg._dv_shell = shell  # type: ignore[attr-defined]
+        dlg.resize(900, 480)
+        dlg.show()
+
+    def _bound_variables_for_dataviewer_id(self, vid: int) -> list[Variable]:
+        vars_for_viewer: list[Variable] = []
+        for node in self._controller.model.iter_objects():
+            if not isinstance(node, Variable):
+                continue
+            try:
+                ids = list(node.get("dataviewer_measure_ids") or [])
+            except Exception:
+                continue
+            if vid in ids:
+                vars_for_viewer.append(node)
+        return vars_for_viewer
+
+    def _ensure_live_series_seed(self, name: str) -> None:
+        if name in self._live_series_buffers:
+            return
+        var = next((n for n in self._controller.model.iter_objects() if isinstance(n, Variable) and str(n.name) == name), None)
+        t = time.perf_counter() - self._live_series_t0
+        v = float(var.value) if (var is not None and isinstance(var.value, (int, float))) else 0.0
+        self._live_series_buffers[name] = ([t], [v])
+
+    def _append_live_series_samples(self) -> None:
+        t = time.perf_counter() - self._live_series_t0
+        # Nur Signale pflegen, die in offenen DataViewern genutzt werden.
+        needed: set[str] = set()
+        for w in self._live_dataviewers.values():
+            names = getattr(w, "_dv_var_names", [])
+            needed.update(str(n) for n in names)
+        if not needed:
+            return
+        value_by_name: dict[str, float] = {}
+        for node in self._controller.model.iter_objects():
+            if isinstance(node, Variable) and str(node.name) in needed and isinstance(node.value, (int, float)):
+                value_by_name[str(node.name)] = float(node.value)
+        for name in needed:
+            self._ensure_live_series_seed(name)
+            xs, ys = self._live_series_buffers[name]
+            xs.append(t)
+            ys.append(value_by_name.get(name, ys[-1] if ys else 0.0))
+            if len(xs) > 4000:
+                del xs[:-2000]
+                del ys[:-2000]
+
+    def _resolve_live_series(self, name: str) -> tuple[np.ndarray, np.ndarray]:
+        self._ensure_live_series_seed(name)
+        xs, ys = self._live_series_buffers[name]
+        return np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+
+    def _resolve_live_unit(self, name: str) -> str:
+        for node in self._controller.model.iter_objects():
+            if isinstance(node, Variable) and str(node.name) == name:
+                try:
+                    return str(node.unit)
+                except Exception:
+                    return ""
+        return ""
+
+    def _update_live_dataviewers(self) -> None:
+        """Während der Simulation neue Samples in offene DataViewer pushen + Achsen im Blick behalten."""
+        if not self._live_dataviewers or self._run_engine is None:
+            return
+        t = time.perf_counter() - self._live_series_t0
+        needed: set[str] = set()
+        shells: list[object] = []
+        for w in self._live_dataviewers.values():
+            names = getattr(w, "_dv_var_names", [])
+            needed.update(str(n) for n in names)
+            sh = getattr(w, "_dv_shell", None)
+            if sh is not None:
+                shells.append(sh)
+        if not needed:
+            return
+
+        value_by_name: dict[str, float] = {}
+        for node in self._controller.model.iter_objects():
+            if isinstance(node, Variable) and str(node.name) in needed and isinstance(node.value, (int, float)):
+                value_by_name[str(node.name)] = float(node.value)
+
+        t_arr = np.asarray([t], dtype=np.float64)
+        for sh in shells:
+            viewer = getattr(sh, "viewer", None)
+            if viewer is None:
+                continue
+            for name in needed:
+                y = value_by_name.get(name)
+                if y is None:
+                    continue
+                try:
+                    viewer.append_samples(name, t_arr, np.asarray([y], dtype=np.float64), max_points=200_000)
+                except Exception:
+                    continue
+
+        # Regelmäßig autoscalen (insb. direkt nach Start/bei großen Sprüngen), damit Kurven sichtbar bleiben.
+        self._live_viewer_autorange_tick += 1
+        if self._live_viewer_autorange_tick % 10 == 0:
+            for sh in shells:
+                viewer = getattr(sh, "viewer", None)
+                scope = getattr(viewer, "_scope", None) if viewer is not None else None
+                if scope is None:
+                    continue
+                try:
+                    scope.auto_range()
+                except Exception:
+                    continue
 
     @staticmethod
     def _format_orthogonal_bends_csv(bends: list[float]) -> str:
@@ -769,6 +1054,8 @@ class MainWindow(QMainWindow):
             return item.variable().id
         if isinstance(item, OperatorBlockItem):
             return item.operator().id
+        if isinstance(item, DataViewerBlockItem):
+            return item.dataviewer().id
         if isinstance(item, ConnectorEdgeItem):
             c = item.domain_connector
             return c.id if c is not None else None
@@ -878,7 +1165,7 @@ class MainWindow(QMainWindow):
     def _controller_select_tokens_from_items(items: list[QGraphicsItem]) -> list[str]:
         tokens: list[str] = []
         for it in items:
-            if isinstance(it, (VariableBlockItem, OperatorBlockItem)):
+            if isinstance(it, (VariableBlockItem, OperatorBlockItem, DataViewerBlockItem)):
                 tokens.append(it.controller_select_token())
             elif isinstance(it, ConnectorEdgeItem):
                 t = it.controller_select_token()

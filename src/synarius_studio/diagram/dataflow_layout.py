@@ -10,10 +10,11 @@ from uuid import UUID
 from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import QGraphicsScene
 
-from synarius_core.model import BasicOperator, Connector, Model, Variable
+from synarius_core.model import BasicOperator, Connector, DataViewer, Model, Variable
 
 from .dataflow_items import (
     ConnectorEdgeItem,
+    DataViewerBlockItem,
     OperatorBlockItem,
     UI_SCALE,
     VariableBlockItem,
@@ -75,6 +76,11 @@ def populate_scene_from_model(
             scene.addItem(item)
             if child.id is not None:
                 id_to_item[child.id] = item
+        elif isinstance(child, DataViewer):
+            pos = (child.x * UI_SCALE, child.y * UI_SCALE)
+            item = DataViewerBlockItem(child)
+            item.setPos(pos[0], pos[1])
+            scene.addItem(item)
 
     for child in root.children:
         if not isinstance(child, Connector):
