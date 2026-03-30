@@ -17,7 +17,7 @@ classifiers = [
 dependencies = [
   "PySide6>=6.0.0",
   # Not on PyPI. github.com/.../synarius-core main is behind; pin includes controller + CLI.
-  "synarius-core @ git+https://github.com/synarius-project/synarius-core.git@42aa0cac5c695896c0fb01dec92a4e5ed1a2cf1e",
+  "synarius-core @ git+https://github.com/synarius-project/synarius-core.git@8aaf0632f95d1b99c427de4b8efc145f19944604",
 ]
 
 [project.scripts]
