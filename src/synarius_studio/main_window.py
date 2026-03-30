@@ -192,6 +192,9 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Synarius Studio {__version__}")
+        # Shared Synarius icon for Studio main window (same as Dataviewer), from local icons folder.
+        studio_icon = QIcon(str(Path(__file__).resolve().parent / "icons" / "synarius64.png"))
+        self.setWindowIcon(studio_icon)
         self.resize(1200, 750)
         self._controller = MinimalController()
         self._history = _History()
