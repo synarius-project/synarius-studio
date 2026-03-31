@@ -4,13 +4,17 @@ from pathlib import Path
 from typing import Sequence
 
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 from .main_window import MainWindow
 
 
 def run(argv: Sequence[str] | None = None) -> int:
     import sys
+
+    from .app_logging import configure_file_logging
+
+    configure_file_logging()
 
     # On Windows, give the process a stable AppUserModelID so the taskbar shows
     # the Synarius identity instead of generic python.exe (same pattern as Dataviewer).
@@ -25,6 +29,16 @@ def run(argv: Sequence[str] | None = None) -> int:
             pass
 
     app = QApplication(list(argv) if argv is not None else sys.argv)
+
+    from .app_logging import install_qt_message_handler
+
+    install_qt_message_handler()
+
+    # Windows-Style (windowsvista) respektiert QTabBar::setExpanding / qproperty-expanding oft nicht —
+    # dann wirken nur einzelne vertikale Tabs „kompakt“. Fusion verhält sich konsistent.
+    _fusion = QStyleFactory.create("Fusion")
+    if _fusion is not None:
+        app.setStyle(_fusion)
 
     # Use the same app icon as Synarius Dataviewer so both applications share
     # a consistent symbol in the Windows taskbar and Alt+Tab switcher.

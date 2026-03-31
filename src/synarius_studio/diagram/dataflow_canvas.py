@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPalette,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QMessageBox
 
 from synarius_core.controller import MinimalController
 from synarius_core.variable_naming import InvalidVariableNameError
@@ -25,10 +25,13 @@ from synarius_core.variable_naming import InvalidVariableNameError
 from ..theme import SELECTION_HIGHLIGHT_TEXT, selection_highlight_qcolor
 
 from .connector_interactive import ConnectorRouteTool
-from .dataflow_items import DataViewerBlockItem, OperatorBlockItem, VariableBlockItem
+from .dataflow_items import DataViewerBlockItem, FmuBlockItem, OperatorBlockItem, VariableBlockItem
 from .placement_interactive import (
+    LIBRARY_ELEMENT_DRAG_MIME,
+    SIGNAL_NAME_DRAG_MIME,
     VARIABLE_NAME_DRAG_MIME,
     CanvasPlacementTool,
+    library_element_drop_command,
     variable_new_instance_command,
 )
 
@@ -113,6 +116,7 @@ class DataflowGraphicsView(QGraphicsView):
     delete_selection_requested = Signal()
     connector_route_command = Signal(str)
     placement_command = Signal(str)
+    signal_mapping_drop = Signal(str, str)
     placement_cancelled = Signal()
 
     def __init__(self, scene: QGraphicsScene | None = None, parent=None) -> None:
@@ -284,7 +288,7 @@ class DataflowGraphicsView(QGraphicsView):
             self._move_anchor_snapshot = {
                 id(it): QPointF(it.pos())
                 for it in self.scene().selectedItems()
-                if isinstance(it, (VariableBlockItem, OperatorBlockItem, DataViewerBlockItem))
+                if isinstance(it, (VariableBlockItem, OperatorBlockItem, FmuBlockItem, DataViewerBlockItem))
             }
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -483,6 +487,12 @@ class DataflowGraphicsView(QGraphicsView):
         if event.mimeData().hasFormat(VARIABLE_NAME_DRAG_MIME):
             event.acceptProposedAction()
             return
+        if event.mimeData().hasFormat(SIGNAL_NAME_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        if event.mimeData().hasFormat(LIBRARY_ELEMENT_DRAG_MIME):
+            event.acceptProposedAction()
+            return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
@@ -490,6 +500,12 @@ class DataflowGraphicsView(QGraphicsView):
             event.ignore()
             return
         if event.mimeData().hasFormat(VARIABLE_NAME_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        if event.mimeData().hasFormat(SIGNAL_NAME_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        if event.mimeData().hasFormat(LIBRARY_ELEMENT_DRAG_MIME):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
@@ -511,6 +527,35 @@ class DataflowGraphicsView(QGraphicsView):
                     event.acceptProposedAction()
                     return
                 self.placement_command.emit(cmd)
+            event.acceptProposedAction()
+            return
+        if md.hasFormat(SIGNAL_NAME_DRAG_MIME):
+            raw = bytes(md.data(SIGNAL_NAME_DRAG_MIME)).decode("utf-8", errors="strict").strip()
+            if raw:
+                vp = event.position().toPoint()
+                it = self.itemAt(vp)
+                while it is not None and not isinstance(it, VariableBlockItem):
+                    it = it.parentItem()
+                if isinstance(it, VariableBlockItem):
+                    self.signal_mapping_drop.emit(raw, str(it.variable().name))
+            event.acceptProposedAction()
+            return
+        if md.hasFormat(LIBRARY_ELEMENT_DRAG_MIME):
+            raw = bytes(md.data(LIBRARY_ELEMENT_DRAG_MIME)).decode("utf-8", errors="strict").strip()
+            if raw and self._controller_for_placement is not None:
+                if self._placement_tool and self._placement_tool.active():
+                    self._placement_tool.cancel(emit_cancelled=False)
+                scene_pos = self.mapToScene(event.position().toPoint())
+                cmd = library_element_drop_command(self._controller_for_placement, raw, scene_pos)
+                if cmd:
+                    self.placement_command.emit(cmd)
+                else:
+                    QMessageBox.information(
+                        self.window(),
+                        "Resources",
+                        "Dragging to the diagram is only supported for standard arithmetic blocks "
+                        "(Add, Sub, Mul, Div). Place other library elements via the console.",
+                    )
             event.acceptProposedAction()
             return
         super().dropEvent(event)

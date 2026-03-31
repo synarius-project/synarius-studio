@@ -31,7 +31,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.model import BasicOperator, BasicOperatorType, Connector, DataViewer, Variable
+from synarius_core.dataflow_sim import elementary_has_fmu_path
+from synarius_core.model import BasicOperator, BasicOperatorType, Connector, DataViewer, ElementaryInstance, Variable
 from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.model.connector_routing import (
     auto_orthogonal_bends,
@@ -438,15 +439,16 @@ class _OutputPinItem(QGraphicsObject):
     In simulation mode, optional green up-arrow + viewer id labels on an extended outer segment (measure).
     """
 
-    def __init__(self, parent: QGraphicsObject | None = None) -> None:
+    def __init__(self, parent: QGraphicsObject | None = None, *, logical_name: str = "out") -> None:
         super().__init__(parent)
+        self._logical_name = str(logical_name)
         self.setZValue(1.0)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setAcceptHoverEvents(True)
         self._measure_ids: list[int] = []
 
     def logical_pin_name(self) -> str:
-        return "out"
+        return self._logical_name
 
     def is_output_pin(self) -> bool:
         return True
@@ -817,6 +819,144 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         return self.mapToScene(r.center())
 
 
+FMU_PIN_ROW = MODULE * 1.12
+
+
+def _distributed_ys(n: int, y0: float, y1: float) -> list[float]:
+    if n <= 0:
+        return []
+    if n == 1:
+        return [(y0 + y1) * 0.5]
+    return [y0 + (y1 - y0) * i / (n - 1) for i in range(n)]
+
+
+class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
+    """FMU elementary: dynamic input/output pins from the model ``pin`` map."""
+
+    def __init__(
+        self,
+        elementary: ElementaryInstance,
+        parent: QGraphicsRectItem | None = None,
+        *,
+        drop_shadow: bool = True,
+    ) -> None:
+        ins = sorted(elementary.in_pins, key=lambda p: p.name)
+        outs = sorted(elementary.out_pins, key=lambda p: p.name)
+        n_in, n_out = len(ins), len(outs)
+        pin_rows = max(n_in, n_out, 1)
+
+        title = elementary.name
+        sub = ""
+        try:
+            mid = elementary.get("fmu.model_identifier")
+            if isinstance(mid, str) and mid.strip():
+                sub = mid.strip()[:28]
+        except (KeyError, TypeError, ValueError):
+            pass
+
+        font = _font_for_variable_name(title, 999, VARIABLE_HEIGHT)
+        fm = QFontMetricsF(font)
+        tw = fm.horizontalAdvance(title)
+        if sub:
+            f2 = QFont()
+            f2.setPixelSize(max(7, int(MODULE * 0.78)))
+            fm2 = QFontMetricsF(f2)
+            tw = max(tw, fm2.horizontalAdvance(sub))
+        inner_w = max(4.8 * MODULE, tw + MODULE * 1.4)
+
+        top_band = MODULE * 1.38
+        pin_area_h = max(FMU_PIN_ROW, pin_rows * FMU_PIN_ROW)
+        block_h = top_band + pin_area_h + MODULE * 0.55
+        block_w = inner_w + MODULE * 2.4
+
+        super().__init__(0, 0, block_w, block_h, parent)
+        self._el = elementary
+        self._pins: dict[str, _InputPinItem | _OutputPinItem] = {}
+
+        self.setBrush(QColor(250, 246, 236))
+        self.setPen(_block_outline_pen(QColor(88, 70, 42)))
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
+
+        self._label = QGraphicsSimpleTextItem(title, self)
+        self._label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._label.setBrush(QColor(38, 32, 22))
+        self._label.setZValue(2.0)
+        self._label.setFont(font)
+        text_w = fm.horizontalAdvance(title)
+        lx = (block_w - text_w) / 2
+        ly = (top_band - fm.height()) / 2 + 0.2 * fm.ascent()
+        self._label.setPos(lx, ly)
+
+        self._sub_label: QGraphicsSimpleTextItem | None = None
+        if sub:
+            f2 = QFont()
+            f2.setPixelSize(max(7, int(MODULE * 0.78)))
+            self._sub_label = QGraphicsSimpleTextItem(sub, self)
+            self._sub_label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._sub_label.setBrush(QColor(90, 80, 65))
+            self._sub_label.setFont(f2)
+            fm2 = QFontMetricsF(f2)
+            sw = fm2.horizontalAdvance(sub)
+            self._sub_label.setPos((block_w - sw) / 2, ly + fm.height() * 0.72)
+
+        if drop_shadow:
+            _apply_light_diagonal_shadow(self)
+
+        y0 = top_band + FMU_PIN_ROW * 0.35
+        y1 = top_band + pin_area_h - FMU_PIN_ROW * 0.35
+        ys_in = _distributed_ys(n_in, y0, y1)
+        ys_out = _distributed_ys(n_out, y0, y1)
+
+        for p, py in zip(ins, ys_in):
+            pin_it = _InputPinItem(p.name, self)
+            pin_it.setPos(0.0, py)
+            self._pins[p.name] = pin_it
+        for p, py in zip(outs, ys_out):
+            pin_it = _OutputPinItem(self, logical_name=p.name)
+            pin_it.setPos(block_w, py)
+            self._pins[p.name] = pin_it
+
+    def elementary(self) -> ElementaryInstance:
+        return self._el
+
+    def controller_select_token(self) -> str:
+        return self._el.hash_name
+
+    def set_diagram_editing_enabled(self, enabled: bool) -> None:
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, enabled)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, enabled)
+        self.setAcceptHoverEvents(enabled)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if enabled else Qt.MouseButton.NoButton)
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self.isSelected():
+            r = self.rect()
+            pad = MARK_BLOCK_PADDING
+            hr = r.adjusted(-pad, -pad, pad, pad)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(MARK_HIGHLIGHT_COLOR)
+            painter.drawRoundedRect(hr, MARK_VARIABLE_HIGHLIGHT_RADIUS, MARK_VARIABLE_HIGHLIGHT_RADIUS)
+        painter.restore()
+        super().paint(painter, _style_option_without_item_selection(option), widget)
+
+    def connection_point(self, pin_name: str) -> QPointF:
+        pin = self._pins.get(pin_name)
+        if pin is None:
+            r = self.rect()
+            return self.mapToScene(r.center())
+        return pin.mapToScene(pin.outer_attachment_local())
+
+
 class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     """Data-viewer badge im Stil der übrigen Blöcke (weißer Block mit Scope-Bildschirm)."""
 
@@ -929,12 +1069,12 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
 
 def diagram_pin_from_graphics_item(
     item: QGraphicsItem | None,
-) -> tuple[_InputPinItem | _OutputPinItem, VariableBlockItem | OperatorBlockItem] | None:
+) -> tuple[_InputPinItem | _OutputPinItem, VariableBlockItem | OperatorBlockItem | FmuBlockItem] | None:
     """If ``item`` is (or is under) a diagram pin, return ``(pin_item, block_item)``."""
     while item is not None:
         if isinstance(item, (_InputPinItem, _OutputPinItem)):
             parent = item.parentItem()
-            if isinstance(parent, (VariableBlockItem, OperatorBlockItem)):
+            if isinstance(parent, (VariableBlockItem, OperatorBlockItem, FmuBlockItem)):
                 return (item, parent)
             return None
         item = item.parentItem()

@@ -31,6 +31,17 @@ LIBRARY_HEADER_TEXT = "#ffffff"
 LIBRARY_HEADER_SEPARATOR = "#505050"
 LIBRARY_HEADER_BUTTON_HOVER = "#454545"
 
+
+def studio_tab_bar_stylesheet(*, selected_tab_bg: str) -> str:
+    """QTabBar wie der Kopfstreifen im Variables-Tab (LIBRARY_HEADER_*); aktiver Tab: ``selected_tab_bg``."""
+    hb, ht, hov = LIBRARY_HEADER_BACKGROUND, LIBRARY_HEADER_TEXT, LIBRARY_HEADER_BUTTON_HOVER
+    return (
+        f"QTabBar {{ background-color: {hb}; border: none; }}"
+        f"QTabBar::tab {{ background-color: {hb}; color: {ht}; padding: 6px 14px; border: none; }}"
+        f"QTabBar::tab:selected {{ background-color: {selected_tab_bg}; color: {ht}; }}"
+        f"QTabBar::tab:hover:!selected {{ background-color: {hov}; }}"
+    )
+
 # Main window + diagram palette toolbars (fixed black chrome, light icons in code).
 STUDIO_TOOLBAR_BACKGROUND = "#000000"
 STUDIO_TOOLBAR_FOREGROUND = "#ffffff"
@@ -58,9 +69,21 @@ def selection_highlight_qcolor(*, opaque: bool = False) -> QColor:
     return c
 
 
-def studio_toolbar_stylesheet() -> str:
-    """Shared QSS for all studio ``QToolBar`` instances (main + canvas palette)."""
-    bg = STUDIO_TOOLBAR_BACKGROUND
+def studio_tooltip_stylesheet() -> str:
+    """Central tooltip style used by all Studio toolbars."""
+    return (
+        "QToolTip {"
+        " color: #ffffff;"
+        " background-color: #2b2b2b;"
+        " border: 1px solid #5a5a5a;"
+        " padding: 4px 6px;"
+        " }"
+    )
+
+
+def studio_toolbar_stylesheet(*, background_color: str | None = None) -> str:
+    """Shared QSS for all studio ``QToolBar`` instances (main + canvas + signals)."""
+    bg = background_color or STUDIO_TOOLBAR_BACKGROUND
     fg = STUDIO_TOOLBAR_FOREGROUND
     combo_hover = STUDIO_TOOLBAR_HOVER
     combo_bg = STUDIO_TOOLBAR_COMBO_BACKGROUND
@@ -82,4 +105,5 @@ def studio_toolbar_stylesheet() -> str:
         f"QToolBar QToolButton:pressed {{ background-color: {tb_pressed}; }}"
         f"QToolBar QToolButton:checked {{ background-color: {action_checked}; }}"
         f"QToolBar QToolButton:checked:hover {{ background-color: {action_checked}; }}"
+        + studio_tooltip_stylesheet()
     )

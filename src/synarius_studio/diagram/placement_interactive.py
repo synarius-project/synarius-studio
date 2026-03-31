@@ -6,6 +6,10 @@ import shlex
 
 # Drag from Variables panel → canvas (``QMimeData`` custom format).
 VARIABLE_NAME_DRAG_MIME = "application/x-synarius-variable-name"
+# Drag from Signals panel → variable block (mapping by drop on canvas).
+SIGNAL_NAME_DRAG_MIME = "application/x-synarius-signal-name"
+# Drag from Resources panel: UTF-8 ``<LibraryName>.<ElementId>`` (same as model ``type_key``).
+LIBRARY_ELEMENT_DRAG_MIME = "application/x-synarius-library-element"
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
@@ -20,6 +24,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from synarius_core.controller import MinimalController
 from synarius_core.model import BasicOperator, BasicOperatorType, Model, Variable
 from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.variable_naming import InvalidVariableNameError, validate_python_variable_name
@@ -60,6 +65,14 @@ _OP_MODE_TO_TYPE: dict[str, BasicOperatorType] = {
     "-": BasicOperatorType.MINUS,
     "*": BasicOperatorType.MULTIPLY,
     "/": BasicOperatorType.DIVIDE,
+}
+
+# Standard library arithmetic elements map to on-canvas ``BasicOperator`` (same as toolbox).
+_STD_LIBRARY_OP_SYMBOL: dict[tuple[str, str], str] = {
+    ("std", "Add"): "+",
+    ("std", "Sub"): "-",
+    ("std", "Mul"): "*",
+    ("std", "Div"): "/",
 }
 
 
@@ -110,6 +123,31 @@ def _pick_unique_name(existing: set[str], base: str) -> str:
     while f"{base}_{n}" in existing:
         n += 1
     return f"{base}_{n}"
+
+
+def library_element_drop_command(controller: MinimalController, type_key: str, scene_pos: QPointF) -> str | None:
+    """
+    Build a ``new`` command for a Resource tile dropped on the diagram, or ``None`` if unsupported.
+
+    Currently only the bundled standard library four arithmetic elements are placed on the canvas;
+    other types need the console or future diagram support for generic ``ElementaryInstance``.
+    """
+    tk = type_key.strip()
+    if "." not in tk:
+        return None
+    lib_name, elem_id = tk.split(".", 1)
+    sym = _STD_LIBRARY_OP_SYMBOL.get((lib_name, elem_id))
+    if sym is None:
+        return None
+    existing = _existing_instance_names(controller.model)
+    c = _snap_pos_half_module(scene_pos)
+    w, h = OPERATOR_SIZE, OPERATOR_SIZE
+    tl = QPointF(c.x() - w * 0.5, c.y() - h * 0.5)
+    mx = tl.x() / UI_SCALE
+    my = tl.y() / UI_SCALE
+    base = {"+": "op_plus", "-": "op_minus", "*": "op_mul", "/": "op_div"}[sym]
+    op_name = _pick_unique_name(existing, base)
+    return f"new BasicOperator {sym} {mx:.12g} {my:.12g} name={shlex.quote(op_name)}"
 
 
 def variable_new_instance_command(name: str, scene_pos: QPointF) -> str:

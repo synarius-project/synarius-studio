@@ -21,6 +21,7 @@ from synarius_core.model import Connector
 from .dataflow_items import (
     CONNECTOR_LINE_WIDTH,
     MARK_HIGHLIGHT_COLOR,
+    FmuBlockItem,
     OperatorBlockItem,
     VariableBlockItem,
     _rounded_orthogonal_chain,
@@ -74,12 +75,12 @@ def _append_orthogonal_to_target(
         h = not h
 
 
-def _pin_instance_id(block: VariableBlockItem | OperatorBlockItem) -> UUID | None:
+def _pin_instance_id(block: VariableBlockItem | OperatorBlockItem | FmuBlockItem) -> UUID | None:
     if isinstance(block, VariableBlockItem):
-        vid = block.variable().id
-        return vid
-    oid = block.operator().id
-    return oid
+        return block.variable().id
+    if isinstance(block, OperatorBlockItem):
+        return block.operator().id
+    return block.elementary().id
 
 
 def _pin_is_free(model, instance_id: UUID, pin_name: str, *, is_output: bool) -> bool:
@@ -249,7 +250,7 @@ class ConnectorRouteTool(QObject):
         self._scene = scene
         self._view = view
         self._sketch: ConnectorRouteSketchItem | None = None
-        self._src_block: VariableBlockItem | OperatorBlockItem | None = None
+        self._src_block: VariableBlockItem | OperatorBlockItem | FmuBlockItem | None = None
         self._src_pin = ""
         self._sx = 0.0
         self._sy = 0.0
@@ -268,7 +269,7 @@ class ConnectorRouteTool(QObject):
         if self._sketch is not None:
             self._sketch.set_state(self._sx, self._sy, self._bends, self._phase_h, self._mx, self._my)
 
-    def start(self, block: VariableBlockItem | OperatorBlockItem, pin_name: str, sx: float, sy: float) -> None:
+    def start(self, block: VariableBlockItem | OperatorBlockItem | FmuBlockItem, pin_name: str, sx: float, sy: float) -> None:
         self._src_block = block
         self._src_pin = pin_name
         self._sx, self._sy = sx, sy
@@ -373,7 +374,9 @@ class ConnectorRouteTool(QObject):
         self._phase_h = not self._phase_h
         self._sync_sketch()
 
-    def _complete_to_block(self, dst_block: VariableBlockItem | OperatorBlockItem, target_pin: str) -> None:
+    def _complete_to_block(
+        self, dst_block: VariableBlockItem | OperatorBlockItem | FmuBlockItem, target_pin: str
+    ) -> None:
         assert self._src_block is not None
         src_id = _pin_instance_id(self._src_block)
         dst_id = _pin_instance_id(dst_block)

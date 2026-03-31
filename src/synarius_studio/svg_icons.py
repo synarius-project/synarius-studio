@@ -11,15 +11,17 @@ from PySide6.QtSvg import QSvgRenderer
 
 # Default ``ColorScheme-Text`` fill in many Breeze symbolic icons (dark-on-light).
 _BREEZE_SYMBOLIC_HEX = re.compile(r"#232629", re.IGNORECASE)
-# Inkscape / custom palette icons often hard-code black in ``style`` (e.g. diagram ``var.svg``).
+# Inkscape / custom palette icons often hard-code dark fills in ``style``.
 _PURE_BLACK_HEX = re.compile(r"#000000", re.IGNORECASE)
+_DARK_CUSTOM_HEX = re.compile(r"#1c1c1c", re.IGNORECASE)
 
 
 def tint_breeze_symbolic_svg_markup(svg_text: str, foreground: QColor) -> str:
     """Replace Breeze / monochrome glyph colors so ``currentColor`` and explicit fills match ``foreground``."""
     hx = foreground.name(QColor.NameFormat.HexRgb)
     s = _BREEZE_SYMBOLIC_HEX.sub(hx, svg_text)
-    return _PURE_BLACK_HEX.sub(hx, s)
+    s = _PURE_BLACK_HEX.sub(hx, s)
+    return _DARK_CUSTOM_HEX.sub(hx, s)
 
 
 def icon_from_inverted_standard_icon(source: QIcon, *, logical_side: int = 24) -> QIcon:

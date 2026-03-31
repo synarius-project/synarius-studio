@@ -10,11 +10,13 @@ from uuid import UUID
 from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import QGraphicsScene
 
-from synarius_core.model import BasicOperator, Connector, DataViewer, Model, Variable
+from synarius_core.dataflow_sim import elementary_has_fmu_path
+from synarius_core.model import BasicOperator, Connector, DataViewer, ElementaryInstance, Model, Variable
 
 from .dataflow_items import (
     ConnectorEdgeItem,
     DataViewerBlockItem,
+    FmuBlockItem,
     OperatorBlockItem,
     UI_SCALE,
     VariableBlockItem,
@@ -53,12 +55,12 @@ def populate_scene_from_model(
     on_connector_orthogonal_bends: Callable[[Connector, list[float]], bool] | None = None,
 ) -> None:
     """
-    Clear ``scene`` and add items for all ``Variable``, ``BasicOperator``, and ``Connector``
-    children of ``model.root``. Block positions are ``(x, y)`` from each instance in the model
-    (as set by ``new Variable … x y size`` / ``new BasicOperator … x y …`` in the loaded script).
+    Clear ``scene`` and add items for ``Variable``, ``BasicOperator``, FMU elementaries
+    (non-variable/non-operator with ``fmu.path``), ``DataViewer``, and ``Connector`` children of
+    ``model.root``. Block positions follow each instance's ``x`` / ``y`` in model space.
     """
     scene.clear()
-    id_to_item: dict[UUID, VariableBlockItem | OperatorBlockItem] = {}
+    id_to_item: dict[UUID, VariableBlockItem | OperatorBlockItem | FmuBlockItem] = {}
 
     root = model.root
     for child in root.children:
@@ -81,6 +83,13 @@ def populate_scene_from_model(
             item = DataViewerBlockItem(child)
             item.setPos(pos[0], pos[1])
             scene.addItem(item)
+        elif isinstance(child, ElementaryInstance) and elementary_has_fmu_path(child):
+            pos = (child.x * UI_SCALE, child.y * UI_SCALE)
+            item = FmuBlockItem(child)
+            item.setPos(pos[0], pos[1])
+            scene.addItem(item)
+            if child.id is not None:
+                id_to_item[child.id] = item
 
     for child in root.children:
         if not isinstance(child, Connector):

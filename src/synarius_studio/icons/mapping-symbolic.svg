@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 24 24"
+   width="24"
+   height="24"
+   version="1.1"
+   xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(1,1)">
+    <g transform="translate(0.18934948,-0.65320788)">
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="m 1.8001298,15.21149 v -2.660572 h 5.2296719 v 2.660569 z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="M 1.8001298,5.2704072 V 2.6098356 h 5.2296719 v 2.6605689 z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="M 1.8001298,10.102107 V 7.441535 h 5.2296719 v 2.660569 z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="m 1.8001297,20.265336 v -2.660572 h 5.2296721 v 2.660569 z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="m 14.491522,15.294986 v -2.660572 h 5.229672 v 2.660569 z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="M 14.491522,5.3539032 V 2.6933316 h 5.229672 v 2.6605689 z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="M 14.491522,10.185603 V 7.525031 h 5.229672 V 10.1856 Z" />
+      <path style="fill:#1c1c1c;stroke:none;stroke-width:0.637967" d="M 14.491522,20.348832 V 17.68826 h 5.229672 v 2.660569 z" />
+      <path style="fill:none;stroke:#1c1c1c;stroke-width:4.29925;stroke-dashoffset:5.11166" d="M 8.3496006,11.939929 8.0008447,6.1295706 13.20714,8.7327182 Z" transform="matrix(0.48944394,0.03184637,-0.02881475,0.54093853,5.9193905,6.2875004)" />
+    </g>
+  </g>
+</svg>

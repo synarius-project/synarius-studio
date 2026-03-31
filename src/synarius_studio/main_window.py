@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 from uuid import UUID
 import numpy as np
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QMimeData, QObject, QSize, Qt, QThread, QTimer, Signal as QtSignal, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QColor,
+    QDrag,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
     QIcon,
     QKeyEvent,
     QKeySequence,
@@ -23,41 +29,67 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QGraphicsItem,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
     QSizePolicy,
     QSplitter,
     QStyle,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QHeaderView,
 )
 from pathlib import Path
+
+from .app_logging import attach_gui_log_handler, main_log_path
+from .log_emitter import LogEmitter
 from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
-from synarius_core.dataflow_sim import SimpleRunEngine
-from synarius_core.model import Connector, DataViewer, Variable
+from synarius_core.dataflow_sim import DataflowCompilePass, SimpleRunEngine, SimulationContext, elementary_has_fmu_path
+from synarius_core.io import load_timeseries_file
+from synarius_core.library import LibraryCatalog
+from synarius_core.model import (
+    Connector,
+    DataViewer,
+    ElementaryInstance,
+    ModelElementType,
+    Signal,
+    SignalContainer,
+    Variable,
+)
+from synarius_core.plugins.registry import PluginRegistry
+from synarius_core.recording import export_recording_buffers
 
 from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, build_resources_panel
 from .theme import (
     CONSOLE_CHROME_BACKGROUND,
     CONSOLE_TAB_TEXT,
+    LIBRARY_HEADER_BUTTON_HOVER,
     SELECTION_HIGHLIGHT,
     SELECTION_HIGHLIGHT_TEXT,
     STUDIO_TOOLBAR_FOREGROUND,
+    studio_tab_bar_stylesheet,
     studio_toolbar_stylesheet,
 )
+from .studio_paths import studio_library_extra_roots, studio_lib_dir, studio_plugins_dir
 from .variables_tab_panel import build_variables_tab_panel
 from .diagram import DataflowGraphicsView, populate_scene_from_model
 from .diagram.dataflow_items import (
     UI_SCALE,
     ConnectorEdgeItem,
     DataViewerBlockItem,
+    FmuBlockItem,
     OperatorBlockItem,
     VariableBlockItem,
 )
@@ -68,7 +100,10 @@ from .diagram.dataflow_canvas import (
     SCROLLBAR_STYLE_QSS,
 )
 from .diagram.dataflow_layout import SCENE_RECT, open_syn_dialog_start_dir
+from .diagram.placement_interactive import VARIABLE_NAME_DRAG_MIME
+from .diagram.placement_interactive import SIGNAL_NAME_DRAG_MIME
 from .dataviewer_select_dialog import SelectDataViewerDialog
+from .fmu_import_dialog import FmuImportDialog
 from .stimulation_dialog import StimulationDialog
 from .svg_icons import icon_from_inverted_standard_icon, icon_from_tinted_svg_file, qicon_panel_toggle_for_toolbar
 
@@ -76,6 +111,9 @@ DEFAULT_OUTPUT_COLOR = "#ADD8E6"  # light blue
 DEFAULT_PROMPT_COLOR = "#90EE90"  # light green
 DEFAULT_INPUT_COLOR = "#FFFFFF"  # terminal-like user input
 ERROR_COLOR = "#FF6666"
+
+_CMD_LOG = logging.getLogger("synarius_studio.console")
+_REC_LOG = logging.getLogger("synarius_studio.recordings")
 
 
 @dataclass
@@ -198,6 +236,169 @@ class _TerminalConsole(QTextEdit):
         super().keyPressEvent(event)
 
 
+class _SignalsMappingTable(QTableWidget):
+    """Signals table supporting variable-name drop onto a signal row."""
+
+    def __init__(self, on_map_drop: Callable[[str, str], None], parent: QWidget | None = None) -> None:
+        super().__init__(0, 3, parent)
+        self._on_map_drop = on_map_drop
+        self.setAcceptDrops(True)
+        self.setDragDropOverwriteMode(False)
+
+    @staticmethod
+    def _mime_variable_name(md: QMimeData) -> str | None:
+        if md.hasFormat(VARIABLE_NAME_DRAG_MIME):
+            raw = bytes(md.data(VARIABLE_NAME_DRAG_MIME).data()).decode("utf-8").strip()
+            return raw or None
+        if md.hasText():
+            txt = md.text().strip()
+            return txt or None
+        return None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._mime_variable_name(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._mime_variable_name(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        variable_name = self._mime_variable_name(event.mimeData())
+        if variable_name is None:
+            event.ignore()
+            return
+        row = self.rowAt(int(event.position().y()))
+        if row < 0:
+            event.ignore()
+            return
+        signal_item = self.item(row, 0)
+        if signal_item is None:
+            event.ignore()
+            return
+        signal_name = signal_item.text().strip()
+        if not signal_name:
+            event.ignore()
+            return
+        self._on_map_drop(signal_name, variable_name)
+        event.acceptProposedAction()
+
+    def startDrag(self, supportedActions) -> None:  # noqa: ANN001
+        row = self.currentRow()
+        if row < 0:
+            return
+        sig_item = self.item(row, 0)
+        if sig_item is None:
+            return
+        signal_name = sig_item.text().strip()
+        if not signal_name:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(SIGNAL_NAME_DRAG_MIME, signal_name.encode("utf-8"))
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction, Qt.DropAction.CopyAction)
+
+
+class _RunLoopWorker(QObject):
+    """Run SimpleRunEngine in a dedicated thread and publish live values."""
+
+    # Use object payload for robust queued cross-thread delivery.
+    tick = QtSignal(float, object)  # sim_time_s, {var_name: value}
+    started_ok = QtSignal()
+    start_failed = QtSignal(str)
+    stopped = QtSignal()
+
+    def __init__(
+        self,
+        model,
+        *,
+        dt_s: float = 0.02,
+        tick_interval_ms: int = 25,
+        plugin_registry: PluginRegistry | None = None,
+    ) -> None:
+        super().__init__()
+        self._model = model
+        self._dt_s = float(dt_s)
+        self._tick_interval_ms = int(tick_interval_ms)
+        self._plugin_registry = plugin_registry
+        self._engine: SimpleRunEngine | None = None
+        self._timer: QTimer | None = None
+        self._stop_requested = False
+        self._t0 = 0.0
+
+    @Slot()
+    def start(self) -> None:
+        try:
+            self._engine = SimpleRunEngine(
+                self._model,
+                dt_s=self._dt_s,
+                plugin_registry=self._plugin_registry,
+            )
+            self._engine.init()
+            if self._engine.context.artifacts.get("dataflow") is None:
+                self.start_failed.emit("Cannot simulate: invalid dataflow (e.g. cycle).")  # type: ignore[attr-defined]
+                self.stopped.emit()  # type: ignore[attr-defined]
+                return
+            self._t0 = time.perf_counter()
+            self._stop_requested = False
+            self._timer = QTimer(self)
+            self._timer.setInterval(self._tick_interval_ms)
+            self._timer.timeout.connect(self._on_tick)
+            self._timer.start()
+            self.started_ok.emit()  # type: ignore[attr-defined]
+        except Exception as exc:
+            self.start_failed.emit(str(exc))  # type: ignore[attr-defined]
+            self.stopped.emit()  # type: ignore[attr-defined]
+
+    @Slot()
+    def request_stop(self) -> None:
+        self._stop_requested = True
+
+    @Slot()
+    def _on_tick(self) -> None:
+        if self._stop_requested:
+            if self._timer is not None:
+                self._timer.stop()
+            self.stopped.emit()  # type: ignore[attr-defined]
+            return
+        if self._engine is None:
+            self.stopped.emit()  # type: ignore[attr-defined]
+            return
+        try:
+            self._engine.step()
+            values: dict[str, float] = {}
+            for node in self._model.iter_objects():
+                if not isinstance(node, Variable):
+                    continue
+                val = node.value
+                if isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, bool):
+                    values[str(node.name)] = float(val)
+            fmu_ws: dict[str, float] = {}
+            compiled = self._engine.context.artifacts.get("dataflow")
+            ws = self._engine.context.scalar_workspace
+            if compiled is not None and ws is not None:
+                node_by_id = getattr(compiled, "node_by_id", None)
+                if isinstance(node_by_id, dict):
+                    for uid, node in node_by_id.items():
+                        if not isinstance(node, ElementaryInstance) or not elementary_has_fmu_path(node):
+                            continue
+                        raw = ws.get(uid, 0.0)
+                        try:
+                            fv = float(raw)
+                        except (TypeError, ValueError):
+                            fv = float("nan")
+                        fmu_ws[str(node.name)] = fv
+            payload = {"variables": values, "fmu_workspace": fmu_ws}
+            self.tick.emit(time.perf_counter() - self._t0, payload)  # type: ignore[attr-defined]
+        except Exception:
+            self.stopped.emit()  # type: ignore[attr-defined]
+
+
 class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -206,14 +407,16 @@ class MainWindow(QMainWindow):
         studio_icon = QIcon(str(Path(__file__).resolve().parent / "icons" / "synarius64.png"))
         self.setWindowIcon(studio_icon)
         self.resize(1200, 750)
-        self._controller = MinimalController()
+        self._controller = MinimalController(
+            library_catalog=LibraryCatalog(extra_roots=studio_library_extra_roots()),
+            plugin_registry=PluginRegistry(extra_plugin_containers=[studio_plugins_dir()]),
+        )
         self._history = _History()
         self._default_output_color = DEFAULT_OUTPUT_COLOR
-        self._sim_run_engine: SimpleRunEngine | None = None
-        self._sim_timer = QTimer(self)
-        self._sim_timer.setInterval(25)
-        self._sim_timer.timeout.connect(self._on_simulation_timer_tick)
+        self._run_engine: SimpleRunEngine | None = None
         self._simulation_running = False
+        self._run_thread: QThread | None = None
+        self._run_worker: _RunLoopWorker | None = None
         self._sim_mode_suppress_action = False
         self._sim_play_suppress_action = False
         self._last_applied_simulation_mode: bool | None = None
@@ -222,6 +425,15 @@ class MainWindow(QMainWindow):
         self._live_series_buffers: dict[str, tuple[list[float], list[float]]] = {}
         self._live_series_t0 = time.perf_counter()
         self._live_viewer_autorange_tick = 0
+        # Recording UI state (experiment mode, canvas toolbar).
+        self._record_last_dir: Path | None = None
+        self._record_last_basename: str = "measurement"
+        self._record_last_format: str = "mdf"
+        # Recording: per-variable time-series buffers for experiment mode.
+        self._record_series_buffers: dict[str, tuple[list[float], list[float]]] = {}
+        self._record_series_t0: float = 0.0
+        self._recordings_table: QTableWidget | None = None
+        self._signals_table: QTableWidget | None = None
 
         central = QWidget(self)
         root_layout = QVBoxLayout(central)
@@ -243,6 +455,7 @@ class MainWindow(QMainWindow):
         self._dataflow_view.attach_placement_tool(self._controller)
         self._dataflow_view.connector_route_command.connect(self._on_connector_route_command)
         self._dataflow_view.placement_command.connect(self._on_placement_canvas_command)
+        self._dataflow_view.signal_mapping_drop.connect(self._on_canvas_signal_mapping_drop)
         self._dataflow_view.placement_cancelled.connect(self._uncheck_diagram_palette_actions)
         self._dataflow_view.scene_left_release.connect(self._sync_scene_selection_to_controller)
         self._dataflow_view.block_move_finished.connect(self._sync_diagram_move_to_controller)
@@ -253,6 +466,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready.")
         self.setCentralWidget(central)
         self._sync_simulation_mode_from_model()
+
+        self._studio_log_emitter = LogEmitter(self)
+        self._studio_log_emitter.message.connect(self._append_experiment_log)
+        attach_gui_log_handler(self._studio_log_emitter)
 
     def _create_actions(self) -> None:
         self._icons_dir = Path(__file__).resolve().parent / "icons"
@@ -370,24 +587,56 @@ class MainWindow(QMainWindow):
                 btn.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
     def _create_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
+        # Classic menu bar is intentionally hidden; File/Edit are exposed via toolbar menu buttons.
+        self.menuBar().setVisible(False)
+
+        file_menu = QMenu("File", self)
         menu_open = QAction("Open…", self)
         menu_open.triggered.connect(self._open_project)
         file_menu.addAction(menu_open)
         menu_save = QAction("Save…", self)
         menu_save.triggered.connect(self._save_project)
         file_menu.addAction(menu_save)
+        menu_install = QAction("Install extension (ZIP)…", self)
+        menu_install.triggered.connect(self._install_extension_zip)
+        file_menu.addAction(menu_install)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
 
-        edit_menu = self.menuBar().addMenu("Edit")
+        edit_menu = QMenu("Edit", self)
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
+        self._file_menu = file_menu
+        self._edit_menu = edit_menu
 
     def _create_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar", self)
         self._main_toolbar = toolbar
         toolbar.setMovable(False)
+        # First entries: File/Edit dropdowns (replacing classic menu bar).
+        file_btn = QToolButton(self)
+        file_btn.setText("File")
+        file_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        file_btn.setMenu(self._file_menu)
+        toolbar.addWidget(file_btn)
+
+        edit_btn = QToolButton(self)
+        edit_btn.setText("Edit")
+        edit_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        edit_btn.setMenu(self._edit_menu)
+        toolbar.addWidget(edit_btn)
+
+        diagram_btn = QToolButton(self)
+        diagram_btn.setText("Diagram")
+        diagram_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        diagram_menu = QMenu(self)
+        act_fmu_import = QAction("FMU importieren…", self)
+        act_fmu_import.triggered.connect(self._on_import_fmu)
+        diagram_menu.addAction(act_fmu_import)
+        diagram_btn.setMenu(diagram_menu)
+        toolbar.addWidget(diagram_btn)
+
+        toolbar.addSeparator()
         toolbar.addAction(self.open_action)
         toolbar.addAction(self.save_action)
         toolbar.addSeparator()
@@ -453,14 +702,30 @@ class MainWindow(QMainWindow):
         self._zoom_combo.setCurrentText(f"{int(round(percent))}%")
         self._zoom_combo.blockSignals(False)
 
+    @staticmethod
+    def _tab_bar_compact_only_needed(tw: QTabWidget) -> None:
+        """Tabs strecken nicht entlang der ganzen Kante (Windows-Style ignoriert oft nur setExpanding)."""
+        tw.tabBar().setExpanding(False)
+        compact_qss = "QTabWidget QTabBar { qproperty-expanding: false; }"
+        cur = (tw.styleSheet() or "").strip()
+        if "qproperty-expanding" in cur:
+            return
+        tw.setStyleSheet(f"{cur}\n{compact_qss}".strip() if cur else compact_qss)
+
     def _build_main_layout(self, root_layout: QVBoxLayout) -> None:
         left_tabs = QTabWidget(self)
         left_tabs.setTabPosition(QTabWidget.TabPosition.East)
         left_tabs.setDocumentMode(True)
-        left_tabs.setStyleSheet("QTabWidget::pane { border: 0; margin: 0; padding: 0; }")
+        left_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 0; margin: 0; padding: 0; }\n"
+            + studio_tab_bar_stylesheet(selected_tab_bg=LIBRARY_HEADER_BUTTON_HOVER)
+        )
+        self._left_tabs = left_tabs
         self._variables_panel = build_variables_tab_panel(self._controller, self)
         left_tabs.addTab(self._variables_panel, "Variables")
-        left_tabs.addTab(build_resources_panel(self._controller, self), "Resources")
+        self._resources_panel_widget = build_resources_panel(self._controller, self)
+        left_tabs.addTab(self._resources_panel_widget, "Resources")
+        MainWindow._tab_bar_compact_only_needed(left_tabs)
         _resource_tab_strip_w = max(left_tabs.tabBar().sizeHint().width(), 28)
         _left_resources_w = RESOURCES_PANEL_FIXED_WIDTH + _resource_tab_strip_w
         left_tabs.setFixedWidth(_left_resources_w)
@@ -512,10 +777,20 @@ class MainWindow(QMainWindow):
         self._canvas_stop_action.setToolTip(self.stop_action.toolTip())
         self._canvas_stop_action.triggered.connect(self._on_simulation_stop)
         self._canvas_stop_action.setVisible(False)
+        self._canvas_record_action = QAction(self)
+        self._canvas_record_action.setCheckable(True)
+        self._canvas_record_action.setToolTip(
+            "Record all variable values at the end of the next simulation run"
+        )
+        rec_icon_path = self._icons_dir / "media-record-symbolic.svg"
+        if rec_icon_path.exists():
+            self._canvas_record_action.setIcon(QIcon(str(rec_icon_path)))
+        self._canvas_record_action.setVisible(False)
 
         self._diagram_palette_toolbar.addSeparator()
         self._diagram_palette_toolbar.addAction(self._canvas_play_action)
         self._diagram_palette_toolbar.addAction(self._canvas_stop_action)
+        self._diagram_palette_toolbar.addAction(self._canvas_record_action)
 
         canvas_host_layout.addWidget(self._diagram_palette_toolbar, 0)
 
@@ -530,20 +805,28 @@ class MainWindow(QMainWindow):
 
         self.right_tabs = QTabWidget(self)
         self.right_tabs.setTabPosition(QTabWidget.TabPosition.West)
-        self.right_tabs.addTab(self._panel_label("Experiment"), "Experiment")
+        self.right_tabs.addTab(self._build_experiment_panel(), "Measurements")
+        self.right_tabs.addTab(self._build_signals_panel(), "Signals")
+        self.right_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 0; margin: 0; padding: 0; }\n"
+            + studio_tab_bar_stylesheet(selected_tab_bg=LIBRARY_HEADER_BUTTON_HOVER)
+        )
+        MainWindow._tab_bar_compact_only_needed(self.right_tabs)
         self.right_tabs.setMinimumWidth(140)
+        self.right_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self.bottom_tabs = QTabWidget(self)
         self.bottom_tabs.setDocumentMode(True)
+        self.bottom_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.bottom_tabs.setStyleSheet(
-            (
-                "QTabWidget::pane {{ border: 0; margin: 0; padding: 0; background-color: {bg}; }}"
-                "QTabBar::tab {{ background-color: #3a3a3a; color: {fg}; padding: 6px 14px; border: none; }}"
-                "QTabBar::tab:selected {{ background-color: {bg}; }}"
-                "QTabBar::tab:hover:!selected {{ background-color: #444444; }}"
-            ).format(bg=CONSOLE_CHROME_BACKGROUND, fg=CONSOLE_TAB_TEXT)
+            f"QTabWidget::pane {{ border: 0; margin: 0; padding: 0; background-color: {CONSOLE_CHROME_BACKGROUND}; }}"
+            + studio_tab_bar_stylesheet(selected_tab_bg=CONSOLE_CHROME_BACKGROUND)
         )
         self.bottom_tabs.addTab(self._build_console_panel(), "Console")
+        self.bottom_tabs.addTab(self._build_build_log_panel(), "Build")
+        self.bottom_tabs.addTab(self._build_experiment_log_panel(), "Experiment")
+        self.bottom_tabs.addTab(self._build_fmu_debug_panel(), "FMU")
+        MainWindow._tab_bar_compact_only_needed(self.bottom_tabs)
         self.bottom_tabs.setMinimumHeight(100)
 
         self.center_split = QSplitter(self)
@@ -565,6 +848,86 @@ class MainWindow(QMainWindow):
         self.horizontal_split.setSizes([_left_resources_w, 712, 220])
 
         root_layout.addWidget(self.horizontal_split, 1)
+
+    def _reload_library_and_plugins(self) -> None:
+        self._controller.library_catalog = LibraryCatalog(extra_roots=studio_library_extra_roots())
+        self._controller.alias_roots["@libraries"] = self._controller.library_catalog.root
+        self._controller.plugin_registry.reload()
+
+    def _refresh_resources_panel(self) -> None:
+        tabs = getattr(self, "_left_tabs", None)
+        panel = getattr(self, "_resources_panel_widget", None)
+        if tabs is None or panel is None:
+            return
+        idx = tabs.indexOf(panel)
+        if idx < 0:
+            return
+        tabs.removeTab(idx)
+        panel.deleteLater()
+        self._resources_panel_widget = build_resources_panel(self._controller, self)
+        tabs.insertTab(idx, self._resources_panel_widget, "Resources")
+
+    def _install_extension_zip(self) -> None:
+        from synarius_core.plugins.install import install_distribution_archive
+
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Install extension (ZIP)",
+            str(Path.home()),
+            "Zip archives (*.zip)",
+        )
+        if not path_str:
+            return
+        studio_plugins_dir().mkdir(parents=True, exist_ok=True)
+        studio_lib_dir().mkdir(parents=True, exist_ok=True)
+        try:
+            summary = install_distribution_archive(
+                Path(path_str),
+                plugins_container=studio_plugins_dir(),
+                lib_container=studio_lib_dir(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Install extension", str(exc))
+            return
+        self._reload_library_and_plugins()
+        self._refresh_resources_panel()
+        self._variables_panel.refresh()
+        parts: list[str] = []
+        if summary.get("plugins"):
+            parts.append("Plugins:\n" + "\n".join(str(p) for p in summary["plugins"]))
+        if summary.get("lib"):
+            parts.append("Libraries:\n" + "\n".join(str(p) for p in summary["lib"]))
+        QMessageBox.information(self, "Install extension", "\n\n".join(parts) or "Done.")
+        self.statusBar().showMessage("Extensions installed; library and plugin lists reloaded.")
+
+    def _warn_if_fmu_without_runtime_plugin(self) -> bool:
+        if self._controller.plugin_registry.plugin_for_capability("runtime:fmu"):
+            return True
+        from synarius_core.model import BasicOperator, ElementaryInstance, Variable
+
+        for obj in self._controller.model.iter_objects():
+            if not isinstance(obj, ElementaryInstance):
+                continue
+            if isinstance(obj, (Variable, BasicOperator)):
+                continue
+            try:
+                fm = obj.get("fmu")
+            except KeyError:
+                continue
+            if isinstance(fm, dict) and str(fm.get("path") or "").strip():
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle("FMU blocks")
+                box.setText(
+                    "The diagram contains FMU (or similar) elementary block(s), but no plugin "
+                    "registers capability runtime:fmu. The built-in scalar engine will not "
+                    "execute these blocks (outputs stay at zero). Continue anyway?"
+                )
+                box.setStandardButtons(
+                    QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+                )
+                return box.exec() == QMessageBox.StandardButton.Ok
+        return True
 
     def _refresh_diagram(self) -> None:
         populate_scene_from_model(
@@ -595,7 +958,7 @@ class MainWindow(QMainWindow):
 
     def _apply_diagram_edit_capabilities(self, editable: bool) -> None:
         for it in self._diagram_item_refs:
-            if isinstance(it, (VariableBlockItem, OperatorBlockItem)):
+            if isinstance(it, (VariableBlockItem, OperatorBlockItem, FmuBlockItem)):
                 it.set_diagram_editing_enabled(editable)
             elif isinstance(it, ConnectorEdgeItem):
                 it.set_route_editing_enabled(editable)
@@ -647,14 +1010,20 @@ class MainWindow(QMainWindow):
             self._sync_play_actions_checked(self._simulation_running)
         else:
             self._sync_play_actions_checked(False)
-        # Canvas toolbar: hide placement palette in simulation, show Play/Stop there.
+        # Canvas toolbar: hide placement palette in simulation, show Play/Stop/Record there.
         for act in getattr(self, "_diagram_palette_actions", []):
             act.setVisible(not on)
-        if hasattr(self, "_canvas_play_action") and hasattr(self, "_canvas_stop_action"):
+        if (
+            hasattr(self, "_canvas_play_action")
+            and hasattr(self, "_canvas_stop_action")
+            and hasattr(self, "_canvas_record_action")
+        ):
             self._canvas_play_action.setVisible(on)
             self._canvas_stop_action.setVisible(on)
+            self._canvas_record_action.setVisible(on)
             self._canvas_play_action.setEnabled(on)
             self._canvas_stop_action.setEnabled(on and self._simulation_running)
+            self._canvas_record_action.setEnabled(on)
         self.statusBar().showMessage("Simulation mode" if on else "Ready.")
         btn = self._main_toolbar.widgetForAction(self.sim_mode_action)
         if isinstance(btn, QToolButton):
@@ -717,7 +1086,7 @@ class MainWindow(QMainWindow):
         new_id: int | None = None
         if dlg.want_new_viewer():
             try:
-                hn_raw = self._controller.execute("new DataViewer 50 50")
+                hn_raw = self._controller_execute_logged("new DataViewer", source="dialog")
             except CommandError as exc:
                 self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
                 return
@@ -751,13 +1120,15 @@ class MainWindow(QMainWindow):
         for ln in lines:
             self.console.insert_log_before_current_prompt(f"{prompt}> {ln}", DEFAULT_PROMPT_COLOR)
             try:
-                result = self._controller.execute(ln)
+                result = self._controller_execute_logged(ln, source="batch")
             except CommandError as exc:
                 self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
                 self._sync_simulation_mode_from_model()
                 return
-            except Exception as exc:
-                self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+            except Exception:
+                self.console.insert_log_before_current_prompt(
+                    "error: unexpected exception (see log file)", ERROR_COLOR
+                )
                 self._sync_simulation_mode_from_model()
                 return
             if result is not None and result != "":
@@ -791,35 +1162,345 @@ class MainWindow(QMainWindow):
     def _try_start_simulation(self) -> None:
         if not self.sim_mode_action.isChecked():
             return
-        self._run_engine = SimpleRunEngine(self._controller.model, dt_s=0.02)
-        self._run_engine.init()
-        diag = self._run_engine.context.diagnostics
-        if diag:
-            self.statusBar().showMessage("; ".join(diag[:2]))
-        if self._run_engine.context.artifacts.get("dataflow") is None:
-            self.statusBar().showMessage("Cannot simulate: invalid dataflow (e.g. cycle).")
-            self._run_engine = None
+        # Jede Simulation mit frischer Zeitachse und leeren Live-Buffern starten,
+        # damit keine Totzeit/Altwerte aus vorherigen Läufen sichtbar bleiben.
+        self._live_series_buffers.clear()
+        self._live_series_t0 = time.perf_counter()
+        self._reset_open_live_dataviewers_for_new_run()
+        _REC_LOG.info(
+            "simulation start: reset live buffers (size=%d), live_t0=%.6f",
+            len(self._live_series_buffers),
+            self._live_series_t0,
+        )
+        # Reset recording buffers at the start of a run if experiment recording is enabled.
+        if hasattr(self, "_canvas_record_action") and self._canvas_record_action.isChecked():
+            self._record_series_buffers.clear()
+            self._record_series_t0 = time.perf_counter()
+            _REC_LOG.info(
+                "simulation start: recording enabled, reset record buffers (size=%d), record_t0=%.6f",
+                len(self._record_series_buffers),
+                self._record_series_t0,
+            )
+        else:
+            _REC_LOG.info("simulation start: recording disabled")
+        if not self._warn_if_fmu_without_runtime_plugin():
             self._sync_play_actions_checked(False)
             return
+        # Dedicated run-loop worker thread (GUI remains responsive).
+        self._run_thread = QThread(self)
+        self._run_worker = _RunLoopWorker(
+            self._controller.model,
+            dt_s=0.02,
+            tick_interval_ms=25,
+            plugin_registry=self._controller.plugin_registry,
+        )
+        self._run_worker.moveToThread(self._run_thread)
+        self._run_thread.started.connect(self._run_worker.start)
+        self._run_worker.started_ok.connect(self._on_worker_started)  # type: ignore[attr-defined]
+        self._run_worker.start_failed.connect(self._on_worker_start_failed)  # type: ignore[attr-defined]
+        self._run_worker.tick.connect(self._on_worker_tick)  # type: ignore[attr-defined]
+        self._run_worker.stopped.connect(self._on_worker_stopped)  # type: ignore[attr-defined]
+        self._run_worker.stopped.connect(self._run_thread.quit)  # type: ignore[attr-defined]
+        self._run_thread.finished.connect(self._on_run_thread_finished)
+        # Mark as running before first tick arrives (queued signal order across threads).
         self._simulation_running = True
         self.stop_action.setEnabled(True)
         if hasattr(self, "_canvas_play_action") and hasattr(self, "_canvas_stop_action"):
             self._canvas_stop_action.setEnabled(True)
-        self._sim_timer.start()
-        self._refresh_variable_value_labels()
+        self._run_thread.start()
 
     def _on_simulation_stop(self) -> None:
-        self._sim_timer.stop()
+        # Stop request is asynchronous; final UI/state reset happens in _on_worker_stopped.
+        if self._run_worker is not None:
+            self._run_worker.request_stop()
+        if self.sim_mode_action.isChecked():
+            self.stop_action.setEnabled(False)
+            if hasattr(self, "_canvas_play_action") and hasattr(self, "_canvas_stop_action"):
+                self._canvas_stop_action.setEnabled(False)
+
+    def _on_worker_started(self) -> None:
+        # Already marked running in _try_start_simulation.
+        self._refresh_variable_value_labels()
+
+    def _reset_open_live_dataviewers_for_new_run(self) -> None:
+        """Reset plotted series in already-open live DataViewer dialogs before a new run starts."""
+        for w in self._live_dataviewers.values():
+            names = [str(n) for n in getattr(w, "_dv_var_names", [])]
+            sh = getattr(w, "_dv_shell", None)
+            viewer = getattr(sh, "viewer", None) if sh is not None else None
+            if viewer is None:
+                continue
+            for name in names:
+                # Use a neutral placeholder, not the previous run's last value.
+                try:
+                    viewer.set_channel_data(
+                        name,
+                        np.asarray([0.0], dtype=np.float64),
+                        np.asarray([0.0], dtype=np.float64),
+                    )
+                except Exception:
+                    continue
+
+    def _on_worker_start_failed(self, message: str) -> None:
+        self.statusBar().showMessage(message or "Cannot start simulation.")
+        self._append_experiment_log(f"[simulation] start failed: {message or 'unknown'}")
+        self._simulation_running = False
+        self._sync_play_actions_checked(False)
+
+    def _on_worker_tick(self, sim_time_s: float, value_by_name: object) -> None:
+        vars_map: dict[str, float] = {}
+        fmu_map: dict[str, float] = {}
+        if isinstance(value_by_name, dict) and "variables" in value_by_name:
+            vm = value_by_name.get("variables")
+            vars_map = vm if isinstance(vm, dict) else {}
+            fw = value_by_name.get("fmu_workspace")
+            fmu_map = fw if isinstance(fw, dict) else {}
+        elif isinstance(value_by_name, dict):
+            vars_map = {
+                str(k): float(v)
+                for k, v in value_by_name.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
+        self._refresh_variable_value_labels()
+        self._append_live_series_samples(value_by_name=vars_map, t_override=sim_time_s)
+        self._update_live_dataviewers(value_by_name=vars_map, t_override=sim_time_s)
+        self._update_fmu_debug_table(fmu_map)
+
+    def _update_fmu_debug_table(self, fmu_map: dict[str, float]) -> None:
+        tbl = getattr(self, "_fmu_debug_table", None)
+        if tbl is None:
+            return
+        keys = sorted(fmu_map.keys())
+        tbl.setRowCount(len(keys))
+        for i, k in enumerate(keys):
+            v = fmu_map[k]
+            tbl.setItem(i, 0, QTableWidgetItem(str(k)))
+            tbl.setItem(i, 1, QTableWidgetItem(str(v)))
+
+    def _on_worker_stopped(self) -> None:
         self._simulation_running = False
         self._run_engine = None
         self._refresh_variable_value_labels()
         self._variables_panel.refresh()
         self._sync_play_actions_checked(False)
-        if self.sim_mode_action.isChecked():
-            self.stop_action.setEnabled(False)
-            if hasattr(self, "_canvas_play_action") and hasattr(self, "_canvas_stop_action"):
-                self._canvas_stop_action.setEnabled(False)
         self.statusBar().showMessage("Simulation stopped.")
+        # In experiment mode, offer to record results when the Record action is checked.
+        if (
+            self.sim_mode_action.isChecked()
+            and hasattr(self, "_canvas_record_action")
+            and self._canvas_record_action.isChecked()
+        ):
+            self._maybe_save_recording_after_run()
+
+    def _on_run_thread_finished(self) -> None:
+        self._run_worker = None
+        self._run_thread = None
+
+    def _record_default_dir(self) -> Path:
+        if self._record_last_dir is not None and self._record_last_dir.is_dir():
+            return self._record_last_dir
+        return open_syn_dialog_start_dir()
+
+    def _next_record_filename(self) -> Path:
+        base_dir = self._record_default_dir()
+        fmt = self._record_last_format or "mdf"
+        # MDF-Dateien werden von asammdf standardmäßig als *.mf4 gespeichert;
+        # diesen Suffix verwenden wir daher auch als Default.
+        ext = ".mf4" if fmt == "mdf" else ".parquet" if fmt == "parquet" else ".csv"
+        stem = self._record_last_basename or "measurement"
+        candidate = base_dir / f"{stem}{ext}"
+        if not candidate.exists():
+            return candidate
+        idx = 1
+        while True:
+            candidate = base_dir / f"{stem}_{idx}{ext}"
+            if not candidate.exists():
+                return candidate
+            idx += 1
+
+    def _maybe_save_recording_after_run(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        suggested = self._next_record_filename()
+        fmt = self._record_last_format or "mdf"
+        filters = "MDF files (*.mdf *.mf4 *.dat);;Parquet files (*.parquet *.pq);;CSV files (*.csv)"
+        if fmt == "parquet":
+            selected_filter = "Parquet files (*.parquet *.pq)"
+        elif fmt == "csv":
+            selected_filter = "CSV files (*.csv)"
+        else:
+            selected_filter = "MDF files (*.mdf *.mf4 *.dat)"
+
+        path_str, chosen_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save recording",
+            str(suggested),
+            filters,
+            selected_filter,
+        )
+        if not path_str:
+            _REC_LOG.info("recording: user cancelled save dialog")
+            return
+
+        out_path = Path(path_str)
+        self._record_last_dir = out_path.parent
+        self._record_last_basename = out_path.stem
+        suf = out_path.suffix.lower()
+        if "parquet" in chosen_filter or suf in (".parquet", ".pq"):
+            self._record_last_format = "parquet"
+        elif "csv" in chosen_filter or suf == ".csv":
+            self._record_last_format = "csv"
+        else:
+            self._record_last_format = "mdf"
+
+        try:
+            _REC_LOG.info(
+                "recording: saving buffers (%d channels) to %s as %s",
+                len(self._record_series_buffers),
+                out_path,
+                self._record_last_format,
+            )
+            self._save_recording_to_path(out_path, self._record_last_format)
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Recording", f"Could not save recording:\n{exc}")
+            return
+
+        # Erfolgreich gespeicherte Messung in der Measurements-Liste registrieren.
+        self._register_recording_entry(out_path)
+
+    def _register_recording_entry(self, path: Path) -> None:
+        table = self._recordings_table
+        if table is None:
+            return
+        from datetime import datetime
+
+        ts = datetime.now().strftime("%H:%M:%S")
+        _REC_LOG.info("recording: registered %s at %s", path, ts)
+        table.insertRow(0)
+        name_item = QTableWidgetItem(path.name)
+        time_item = QTableWidgetItem(ts)
+        name_item.setTextAlignment(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+        time_item.setTextAlignment(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+        name_item.setData(Qt.ItemDataRole.UserRole, str(path))
+        table.setItem(0, 0, name_item)
+        table.setItem(0, 1, time_item)
+
+    def _save_recording_to_path(self, path: Path, fmt: str) -> None:
+        if self._record_series_buffers:
+            export_recording_buffers(self._record_series_buffers, path, fmt=fmt)
+            return
+        # Fallback: Snapshot am Ende (eine Probe pro Variable, t=0)
+        snap: dict[str, tuple[list[float], list[float]]] = {}
+        for node in self._controller.model.iter_objects():
+            if not isinstance(node, Variable):
+                continue
+            val = node.value
+            if isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, bool):
+                snap[str(node.name)] = ([0.0], [float(val)])
+        if not snap:
+            return
+        export_recording_buffers(snap, path, fmt=fmt)
+
+    def _on_recording_cell_double_clicked(self, row: int, column: int) -> None:
+        table = self._recordings_table
+        if table is None:
+            return
+        item = table.item(row, 0)
+        if item is None:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, str) or not data:
+            return
+        rec_path = Path(data)
+        if not rec_path.is_file() and rec_path.suffix.lower() == ".mdf":
+            alt = rec_path.with_suffix(".mf4")
+            if alt.is_file():
+                _REC_LOG.info(
+                    "recording: mapped missing %s to existing %s", rec_path, alt
+                )
+                rec_path = alt
+                # Pfad im Modell korrigieren, damit zukünftige Klicks direkt passen.
+                item.setData(Qt.ItemDataRole.UserRole, str(rec_path))
+        _REC_LOG.info("recording: double-click on %s (exists=%s)", rec_path, rec_path.is_file())
+
+        # DataViewer-App-Stack dynamisch verfügbar machen (wie bei Live-DataViewer).
+        try:
+            # Repository-Wurzel: ``.../Synarius`` (eine Ebene über ``synarius-studio``).
+            repo_root = Path(__file__).resolve().parents[3]
+            apps_src = repo_root / "synarius-apps" / "src"
+            if apps_src.exists():
+                s = str(apps_src)
+                if s not in sys.path:
+                    sys.path.insert(0, s)
+        except Exception:
+            pass
+
+        try:
+            from synarius_dataviewer.widgets.data_viewer import DataViewerShell
+            from synarius_dataviewer.io import load_timeseries_file
+        except Exception as exc:
+            _REC_LOG.error("recording: could not import DataViewer; %s", exc)
+            return
+
+        try:
+            bundle = load_timeseries_file(rec_path)
+        except FileNotFoundError:
+            # Datei nicht gefunden: Name + Datum rot & durchgestrichen markieren.
+            name_item = item
+            time_item = table.item(row, 1)
+            for it in (name_item, time_item):
+                if it is None:
+                    continue
+                font = it.font()
+                font.setStrikeOut(True)
+                it.setFont(font)
+                it.setForeground(QColor("red"))
+            _REC_LOG.warning("recording: file not found when opening: %s", rec_path)
+            return
+        except Exception as exc:
+            _REC_LOG.error("recording: error loading %s: %s", rec_path, exc)
+            return
+
+        # Einfacher Dialog mit einem DataViewerShell, der alle Kanäle der Messung lädt.
+        dlg = QDialog(self)
+        dlg.setWindowTitle(rec_path.name)
+        dlg.setWindowFlags(
+            dlg.windowFlags()
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        def _resolve_series(name: str):
+            return bundle.get_series(name)
+
+        def _resolve_unit(name: str) -> str:
+            return bundle.channel_unit(name)
+
+        shell = DataViewerShell(
+            _resolve_series,
+            dlg,
+            enable_walking_axis=False,
+            resolve_channel_unit=_resolve_unit,
+            mode="static",
+            legend_visible_at_start=True,
+        )
+        shell.viewer.recording_saved.connect(
+            lambda path_str: self._register_recording_entry(Path(path_str))
+        )
+        lay.addWidget(shell, 1)
+
+        for name in bundle.channel_names():
+            try:
+                shell.viewer.add_channel(name)
+            except Exception:
+                continue
+
+        dlg.resize(900, 480)
+        dlg.show()
 
     def _on_simulation_timer_tick(self) -> None:
         if self._run_engine is None:
@@ -884,6 +1565,9 @@ class MainWindow(QMainWindow):
             mode="dynamic",
             legend_visible_at_start=True,
         )
+        shell.viewer.recording_saved.connect(
+            lambda path_str: self._register_recording_entry(Path(path_str))
+        )
         layout.addWidget(shell, 1)
         for name in names:
             self._ensure_live_series_seed(name)
@@ -926,35 +1610,120 @@ class MainWindow(QMainWindow):
                 vars_for_viewer.append(node)
         return vars_for_viewer
 
+    def _refresh_live_dataviewer_bindings(self) -> dict[int, list[str]]:
+        """Refresh variable bindings for open live DataViewer dialogs from current model state."""
+        by_vid: dict[int, list[str]] = {}
+        for vid, dlg in self._live_dataviewers.items():
+            names = [str(v.name) for v in self._bound_variables_for_dataviewer_id(vid)]
+            by_vid[vid] = names
+            dlg._dv_var_names = names  # type: ignore[attr-defined]
+        return by_vid
+
+    def _sync_open_live_dataviewers_channels(self) -> None:
+        """Apply current variable bindings immediately to open DataViewer widgets."""
+        if not self._live_dataviewers:
+            return
+        by_vid = self._refresh_live_dataviewer_bindings()
+        for vid, dlg in self._live_dataviewers.items():
+            desired = set(by_vid.get(vid, []))
+            sh = getattr(dlg, "_dv_shell", None)
+            viewer = getattr(sh, "viewer", None) if sh is not None else None
+            if viewer is None:
+                continue
+            current: set[str] = set()
+            reg = getattr(viewer, "_registry", None)
+            if reg is not None and callable(getattr(reg, "names", None)):
+                names_obj = reg.names()
+                if isinstance(names_obj, dict):
+                    current = set(str(k) for k in names_obj.keys())
+            # Add newly bound channels immediately.
+            for name in sorted(desired - current):
+                try:
+                    self._ensure_live_series_seed(name)
+                    viewer.add_channel(name)
+                except Exception:
+                    continue
+            # Remove channels that are no longer bound.
+            for name in sorted(current - desired):
+                try:
+                    viewer.remove_channel(name)
+                except Exception:
+                    continue
+
     def _ensure_live_series_seed(self, name: str) -> None:
         if name in self._live_series_buffers:
             return
-        var = next((n for n in self._controller.model.iter_objects() if isinstance(n, Variable) and str(n.name) == name), None)
-        t = time.perf_counter() - self._live_series_t0
-        v = float(var.value) if (var is not None and isinstance(var.value, (int, float))) else 0.0
-        self._live_series_buffers[name] = ([t], [v])
+        # Keep channel creation stable in DataViewer, but avoid carrying over stale last-run values.
+        self._live_series_buffers[name] = ([0.0], [0.0])
 
-    def _append_live_series_samples(self) -> None:
-        t = time.perf_counter() - self._live_series_t0
+    def _append_live_series_samples(
+        self,
+        *,
+        value_by_name: dict[str, float] | None = None,
+        t_override: float | None = None,
+    ) -> None:
+        t = float(t_override) if t_override is not None else (time.perf_counter() - self._live_series_t0)
         # Nur Signale pflegen, die in offenen DataViewern genutzt werden.
         needed: set[str] = set()
-        for w in self._live_dataviewers.values():
-            names = getattr(w, "_dv_var_names", [])
+        by_vid = self._refresh_live_dataviewer_bindings()
+        for names in by_vid.values():
             needed.update(str(n) for n in names)
-        if not needed:
+        if needed:
+            if value_by_name is None:
+                value_by_name = {}
+                for node in self._controller.model.iter_objects():
+                    if isinstance(node, Variable) and str(node.name) in needed and isinstance(node.value, (int, float)):
+                        value_by_name[str(node.name)] = float(node.value)
+            for name in needed:
+                self._ensure_live_series_seed(name)
+                xs, ys = self._live_series_buffers[name]
+                xs.append(t)
+                ys.append(value_by_name.get(name, ys[-1] if ys else 0.0))
+                if len(xs) > 4000:
+                    del xs[:-2000]
+                    del ys[:-2000]
+
+        # Optional: vollständige Aufzeichnung aller Variablen für den Experiment-Recorder
+        # (unabhängig davon, ob Live-DataViewer geöffnet sind).
+        self._append_recording_sample_if_enabled(value_by_name=value_by_name, t_override=t)
+
+    def _append_recording_sample_if_enabled(
+        self,
+        *,
+        value_by_name: dict[str, float] | None = None,
+        t_override: float | None = None,
+    ) -> None:
+        # Only record in experiment mode when the canvas Record action is checked.
+        if not (
+            self.sim_mode_action.isChecked()
+            and hasattr(self, "_canvas_record_action")
+            and self._canvas_record_action.isChecked()
+        ):
             return
-        value_by_name: dict[str, float] = {}
-        for node in self._controller.model.iter_objects():
-            if isinstance(node, Variable) and str(node.name) in needed and isinstance(node.value, (int, float)):
-                value_by_name[str(node.name)] = float(node.value)
-        for name in needed:
-            self._ensure_live_series_seed(name)
-            xs, ys = self._live_series_buffers[name]
+        t = float(t_override) if t_override is not None else (time.perf_counter() - self._record_series_t0)
+        _REC_LOG.debug("recording tick at t=%.6f", t)
+        if value_by_name is None:
+            value_by_name = {}
+            for node in self._controller.model.iter_objects():
+                if not isinstance(node, Variable):
+                    continue
+                name = str(node.name)
+                val = node.value
+                if isinstance(val, bool):
+                    continue
+                if not isinstance(val, (int, float, np.integer, np.floating)):
+                    continue
+                value_by_name[name] = float(val)
+        for name, val_f in value_by_name.items():
+            buf = self._record_series_buffers.get(name)
+            if buf is None:
+                xs: list[float] = []
+                ys: list[float] = []
+                self._record_series_buffers[name] = (xs, ys)
+            else:
+                xs, ys = buf
             xs.append(t)
-            ys.append(value_by_name.get(name, ys[-1] if ys else 0.0))
-            if len(xs) > 4000:
-                del xs[:-2000]
-                del ys[:-2000]
+            ys.append(float(val_f))
 
     def _resolve_live_series(self, name: str) -> tuple[np.ndarray, np.ndarray]:
         self._ensure_live_series_seed(name)
@@ -970,15 +1739,21 @@ class MainWindow(QMainWindow):
                     return ""
         return ""
 
-    def _update_live_dataviewers(self) -> None:
+    def _update_live_dataviewers(
+        self,
+        *,
+        value_by_name: dict[str, float] | None = None,
+        t_override: float | None = None,
+    ) -> None:
         """Während der Simulation neue Samples in offene DataViewer pushen + Achsen im Blick behalten."""
-        if not self._live_dataviewers or self._run_engine is None:
+        if not self._live_dataviewers or not self._simulation_running:
             return
-        t = time.perf_counter() - self._live_series_t0
+        t = float(t_override) if t_override is not None else (time.perf_counter() - self._live_series_t0)
         needed: set[str] = set()
         shells: list[object] = []
-        for w in self._live_dataviewers.values():
-            names = getattr(w, "_dv_var_names", [])
+        by_vid = self._refresh_live_dataviewer_bindings()
+        for vid, w in self._live_dataviewers.items():
+            names = by_vid.get(vid, [])
             needed.update(str(n) for n in names)
             sh = getattr(w, "_dv_shell", None)
             if sh is not None:
@@ -986,10 +1761,11 @@ class MainWindow(QMainWindow):
         if not needed:
             return
 
-        value_by_name: dict[str, float] = {}
-        for node in self._controller.model.iter_objects():
-            if isinstance(node, Variable) and str(node.name) in needed and isinstance(node.value, (int, float)):
-                value_by_name[str(node.name)] = float(node.value)
+        if value_by_name is None:
+            value_by_name = {}
+            for node in self._controller.model.iter_objects():
+                if isinstance(node, Variable) and str(node.name) in needed and isinstance(node.value, (int, float)):
+                    value_by_name[str(node.name)] = float(node.value)
 
         t_arr = np.asarray([t], dtype=np.float64)
         for sh in shells:
@@ -1002,7 +1778,8 @@ class MainWindow(QMainWindow):
                     continue
                 try:
                     viewer.append_samples(name, t_arr, np.asarray([y], dtype=np.float64), max_points=200_000)
-                except Exception:
+                except Exception as exc:
+                    _REC_LOG.debug("live-dv append failed for %s: %s", name, exc)
                     continue
 
         # Regelmäßig autoscalen (insb. direkt nach Start/bei großen Sprüngen), damit Kurven sichtbar bleiben.
@@ -1036,12 +1813,14 @@ class MainWindow(QMainWindow):
         prompt = str(self._controller.current.get("prompt_path"))
         self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            result = self._controller.execute(cmd)
+            result = self._controller_execute_logged(cmd, source="diagram")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             return False
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt(
+                "error: unexpected exception (see log file)", ERROR_COLOR
+            )
             return False
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
@@ -1054,6 +1833,8 @@ class MainWindow(QMainWindow):
             return item.variable().id
         if isinstance(item, OperatorBlockItem):
             return item.operator().id
+        if isinstance(item, FmuBlockItem):
+            return item.elementary().id
         if isinstance(item, DataViewerBlockItem):
             return item.dataviewer().id
         if isinstance(item, ConnectorEdgeItem):
@@ -1081,6 +1862,8 @@ class MainWindow(QMainWindow):
             return True
         if s.startswith("undo") or s.startswith("redo") or s.startswith("mv "):
             return True
+        if s.startswith("fmu bind") or s.startswith("fmu reload"):
+            return True
         return False
 
     def _execute_controller_line_for_ui(self, cmd: str) -> None:
@@ -1088,13 +1871,13 @@ class MainWindow(QMainWindow):
         prompt = str(self._controller.current.get("prompt_path"))
         self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            result = self._controller.execute(cmd)
+            result = self._controller_execute_logged(cmd, source="ui")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             self._sync_simulation_mode_from_model()
             return
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt("error: unexpected exception (see log file)", ERROR_COLOR)
             self._sync_simulation_mode_from_model()
             return
         if result is not None and result != "":
@@ -1105,8 +1888,11 @@ class MainWindow(QMainWindow):
         """Keep canvas aligned with core model and controller selection after a console command."""
         if self._console_command_needs_diagram_rebuild(command_line):
             self._refresh_diagram()
+            self._flush_compile_diagnostics_to_build_log()
         elif command_line.strip().lower().startswith("set "):
             self._refresh_variable_value_labels()
+        # Keep open DataViewer dialogs in sync with changed measure bindings immediately.
+        self._sync_open_live_dataviewers_channels()
         self._sync_simulation_mode_from_model()
         self._apply_controller_selection_to_scene()
         self._variables_panel.refresh()
@@ -1116,12 +1902,12 @@ class MainWindow(QMainWindow):
         prompt = str(self._controller.current.get("prompt_path"))
         self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            result = self._controller.execute(cmd)
+            result = self._controller_execute_logged(cmd, source="canvas")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             return
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt("error: unexpected exception (see log file)", ERROR_COLOR)
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
@@ -1165,7 +1951,7 @@ class MainWindow(QMainWindow):
     def _controller_select_tokens_from_items(items: list[QGraphicsItem]) -> list[str]:
         tokens: list[str] = []
         for it in items:
-            if isinstance(it, (VariableBlockItem, OperatorBlockItem, DataViewerBlockItem)):
+            if isinstance(it, (VariableBlockItem, OperatorBlockItem, DataViewerBlockItem, FmuBlockItem)):
                 tokens.append(it.controller_select_token())
             elif isinstance(it, ConnectorEdgeItem):
                 t = it.controller_select_token()
@@ -1183,12 +1969,14 @@ class MainWindow(QMainWindow):
         prompt = str(self._controller.current.get("prompt_path"))
         self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            result = self._controller.execute(cmd)
+            result = self._controller_execute_logged(cmd, source="selection")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             return
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt(
+                "error: unexpected exception (see log file)", ERROR_COLOR
+            )
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
@@ -1204,29 +1992,33 @@ class MainWindow(QMainWindow):
         del_cmd = "del @selected"
         self.console.insert_log_before_current_prompt(f"{prompt}> {select_cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            sel_result = self._controller.execute(select_cmd)
+            sel_result = self._controller_execute_logged(select_cmd, source="delete")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             return
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt(
+                "error: unexpected exception (see log file)", ERROR_COLOR
+            )
             return
         if sel_result is not None and sel_result != "":
             self.console.insert_log_before_current_prompt(sel_result, self._get_output_color())
 
         self.console.insert_log_before_current_prompt(f"{prompt}> {del_cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            result = self._controller.execute(del_cmd)
+            result = self._controller_execute_logged(del_cmd, source="delete")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             return
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt(
+                "error: unexpected exception (see log file)", ERROR_COLOR
+            )
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
         try:
-            self._controller.execute("select")
+            self._controller_execute_logged("select", source="delete")
         except Exception:
             pass
         self._sync_diagram_view_from_core_after_console(del_cmd)
@@ -1239,12 +2031,14 @@ class MainWindow(QMainWindow):
         prompt = str(self._controller.current.get("prompt_path"))
         self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
         try:
-            result = self._controller.execute(cmd)
+            result = self._controller_execute_logged(cmd, source="diagram_move")
         except CommandError as exc:
             self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
             return
-        except Exception as exc:
-            self.console.insert_log_before_current_prompt(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self.console.insert_log_before_current_prompt(
+                "error: unexpected exception (see log file)", ERROR_COLOR
+            )
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
@@ -1252,10 +2046,326 @@ class MainWindow(QMainWindow):
 
     def _panel_label(self, text: str) -> QWidget:
         widget = QWidget(self)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel(text, widget))
+        layout.setContentsMargins(8, 8, 8, 8)
+        lab = QLabel(text, widget)
+        lab.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lab.setWordWrap(True)
+        lab.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout.addWidget(lab, 0, Qt.AlignmentFlag.AlignTop)
         layout.addStretch(1)
         return widget
+
+    def _build_experiment_panel(self) -> QWidget:
+        """Right-side Experiment panel with a recordings table (similar chrome to Variables panel)."""
+        from .theme import (
+            LIBRARY_HEADER_BACKGROUND,
+            LIBRARY_HEADER_SEPARATOR,
+            LIBRARY_HEADER_TEXT,
+            RESOURCES_PANEL_ALTERNATE_ROW,
+            RESOURCES_PANEL_BACKGROUND,
+        )
+
+        widget = QWidget(self)
+        widget.setStyleSheet(f"background-color: {RESOURCES_PANEL_BACKGROUND};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        table = QTableWidget(0, 2, widget)
+        table.setHorizontalHeaderLabels(["File name", "Saved at"])
+        header = table.horizontalHeader()
+        header.setVisible(True)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.setStyleSheet(
+            f"QTableWidget {{ background-color: {RESOURCES_PANEL_BACKGROUND}; "
+            f"alternate-background-color: {RESOURCES_PANEL_ALTERNATE_ROW}; border: none; font-size: 12px; }}"
+            f"QHeaderView::section {{ background-color: {LIBRARY_HEADER_BACKGROUND}; "
+            f"color: {LIBRARY_HEADER_TEXT}; border: none; "
+            f"border-bottom: 1px solid {LIBRARY_HEADER_SEPARATOR}; "
+            "font-weight: 600; padding: 2px 6px; text-align: left; }}"
+            "QTableWidget::item { color: #000000; padding: 0px 4px; text-align: left; }"
+            f"QTableWidget::item:selected {{ background-color: {SELECTION_HIGHLIGHT}; color: {SELECTION_HIGHLIGHT_TEXT}; }}"
+        )
+        table.cellDoubleClicked.connect(self._on_recording_cell_double_clicked)
+
+        layout.addWidget(table, 1)
+
+        self._recordings_table = table
+        return widget
+
+    def _build_signals_panel(self) -> QWidget:
+        from .theme import (
+            LIBRARY_HEADER_BACKGROUND,
+            LIBRARY_HEADER_SEPARATOR,
+            LIBRARY_HEADER_TEXT,
+            RESOURCES_PANEL_ALTERNATE_ROW,
+            RESOURCES_PANEL_BACKGROUND,
+        )
+
+        widget = QWidget(self)
+        widget.setStyleSheet(f"background-color: {RESOURCES_PANEL_BACKGROUND};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        action_bar = QToolBar(widget)
+        action_bar.setMovable(False)
+        # Dunkler Hintergrund wie der Tabellen-Header; kleine, invertierte Symbole.
+        action_bar.setIconSize(QSize(16, 16))
+        action_bar.setStyleSheet(studio_toolbar_stylesheet(background_color=LIBRARY_HEADER_BACKGROUND))
+
+        act_load = QAction("Load Signal File", self)
+        act_load.triggered.connect(self._on_load_signal_file_clicked)
+        act_load.setIcon(self.open_action.icon())
+        act_map = QAction("map by names", self)
+        act_map.triggered.connect(self._on_map_signals_by_names_clicked)
+        map_icon = self._icons_dir / "mapping-symbolic.svg"
+        if map_icon.exists():
+            # invertiert/hell auf dunklem Hintergrund
+            act_map.setIcon(icon_from_tinted_svg_file(map_icon, QColor("#ffffff")))
+        act_unmap = QAction("delete mapping", self)
+        act_unmap.triggered.connect(self._on_delete_mapping_clicked)
+        del_icon = self._icons_dir / "mapping-del-symbolic.svg"
+        if del_icon.exists():
+            act_unmap.setIcon(icon_from_tinted_svg_file(del_icon, QColor("#ffffff")))
+        action_bar.addAction(act_load)
+        action_bar.addAction(act_map)
+        action_bar.addAction(act_unmap)
+
+        table = _SignalsMappingTable(self._on_signals_row_drop, widget)
+        table.setHorizontalHeaderLabels(["Signal", "", "Variable"])
+        table.setDragEnabled(True)
+        table.setDragDropMode(QTableWidget.DragDropMode.DragOnly)
+        table.setDefaultDropAction(Qt.DropAction.IgnoreAction)
+        hdr = table.horizontalHeader()
+        hdr.setVisible(True)
+        hdr.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setDefaultSectionSize(20)
+        hdr.setFixedHeight(34)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.setStyleSheet(
+            f"QTableWidget {{ background-color: {RESOURCES_PANEL_BACKGROUND}; "
+            f"alternate-background-color: {RESOURCES_PANEL_ALTERNATE_ROW}; border: none; font-size: 12px; }}"
+            f"QHeaderView::section {{ background-color: {LIBRARY_HEADER_BACKGROUND}; color: {LIBRARY_HEADER_TEXT}; "
+            f"border: none; border-bottom: 1px solid {LIBRARY_HEADER_SEPARATOR}; font-weight: 600; "
+            "padding: 2px 6px; text-align: left; }}"
+            "QTableWidget::item { color: #000000; padding: 0px 4px; text-align: left; }"
+            f"QTableWidget::item:selected {{ background-color: {SELECTION_HIGHLIGHT}; color: {SELECTION_HIGHLIGHT_TEXT}; }}"
+        )
+
+        layout.addWidget(action_bar, 0)
+        layout.addWidget(table, 1)
+        self._signals_table = table
+        self._refresh_signals_table()
+        return widget
+
+    def _refresh_signals_table(self) -> None:
+        table = self._signals_table
+        if table is None:
+            return
+        model = self._controller.model
+        stimuli = model.get_root_by_type(ModelElementType.MODEL_STIMULI)
+        # Reverse map: signal -> first mapped variable name from SQL registry rows.
+        mapped_var_by_signal: dict[str, str] = {}
+        for var_name, _count, sig_name in model.variable_registry.rows_ordered_by_name():
+            sig = str(sig_name).strip()
+            if not sig or sig == "None":
+                continue
+            if sig not in mapped_var_by_signal:
+                mapped_var_by_signal[sig] = str(var_name)
+        rows: list[tuple[str, int, str]] = []
+        if isinstance(stimuli, SignalContainer):
+            for child in stimuli.children:
+                if not isinstance(child, Signal):
+                    continue
+                xs, _ys = stimuli.get_series(child)
+                mapped_var = mapped_var_by_signal.get(child.name, "")
+                rows.append((child.name, len(xs), mapped_var))
+        rows.sort(key=lambda x: x[0].lower())
+        table.setRowCount(len(rows))
+        _REC_LOG.info(
+            "signals: refresh table rows=%d mapped_signals=%d",
+            len(rows),
+            len(mapped_var_by_signal),
+        )
+        for i, (name, samples, mapped_var) in enumerate(rows):
+            n = QTableWidgetItem(name)
+            arrow = QTableWidgetItem("\u25b6" if mapped_var else "")
+            v = QTableWidgetItem(mapped_var)
+            n.setTextAlignment(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+            arrow.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+            v.setTextAlignment(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+            table.setItem(i, 0, n)
+            table.setItem(i, 1, arrow)
+            table.setItem(i, 2, v)
+
+    def _on_load_signal_file_clicked(self) -> None:
+        path_str, _chosen = QFileDialog.getOpenFileName(
+            self,
+            "Load signal file",
+            str(open_syn_dialog_start_dir()),
+            "Signal files (*.mf4 *.mdf *.dat *.csv *.parquet *.pq)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        try:
+            bundle = load_timeseries_file(path)
+            stimuli = self._controller.model.get_root_by_type(ModelElementType.MODEL_STIMULI)
+            if not isinstance(stimuli, SignalContainer):
+                raise RuntimeError("stimuli container not available")
+            # Replace existing stimuli signals with the loaded file channels.
+            stimuli.clear_all_series()
+            for child in list(stimuli.children):
+                if child.id is not None:
+                    self._controller.model.delete(stimuli, child.id)
+            for sig_name in bundle.channel_names():
+                sig = Signal(name=str(sig_name))
+                self._controller.model.attach(sig, parent=stimuli, reserve_existing=False, remap_ids=False)
+                tx, ty = bundle.get_series(sig_name)
+                stimuli.set_series(sig, tx, ty)
+            if "source_file" not in stimuli.attribute_dict:
+                dict.__setitem__(stimuli.attribute_dict, "source_file", (str(path), None, None, True, True))
+            else:
+                stimuli.set("source_file", str(path))
+            _REC_LOG.info(
+                "signals: loaded %d channels from %s into stimuli",
+                len(bundle.channel_names()),
+                path,
+            )
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Signals", f"Could not load signal file:\n{exc}")
+            return
+        self._refresh_signals_table()
+        self._variables_panel.refresh()
+
+    def _on_map_signals_by_names_clicked(self) -> None:
+        model = self._controller.model
+        stimuli = model.get_root_by_type(ModelElementType.MODEL_STIMULI)
+        db = model.get_variable_database()
+        if not isinstance(stimuli, SignalContainer) or db is None:
+            return
+        signals = {child.name for child in stimuli.children if isinstance(child, Signal)}
+        mapped = 0
+        for child in db.children:
+            if not hasattr(child, "name"):
+                continue
+            var_name = str(child.name)
+            if var_name not in signals:
+                continue
+            target = f"@main/variables_db/{child.hash_name}.mapped_signal"
+            cmd = f"set {shlex.quote(target)} {shlex.quote(var_name)}"
+            try:
+                self._controller_execute_logged(cmd, source="signals_map")
+                mapped += 1
+            except Exception:
+                continue
+        self._variables_panel.refresh()
+        self._refresh_signals_table()
+        _REC_LOG.info("signals: map-by-names mapped=%d", mapped)
+        self.statusBar().showMessage(f"Mapped {mapped} variable(s) by name.")
+
+    def _on_delete_mapping_clicked(self) -> None:
+        model = self._controller.model
+        db = model.get_variable_database()
+        if db is None:
+            return
+        table = self._signals_table
+        single_only = False
+        if table is not None and table.currentRow() >= 0:
+            # Nur Mapping für die selektierte Signalzeile löschen.
+            row = table.currentRow()
+            sig_item = table.item(row, 0)
+            if sig_item is not None:
+                sig_name = sig_item.text().strip()
+                if sig_name:
+                    # Bestimme alle Variablennamen, die aktuell auf dieses Signal gemappt sind.
+                    updated = 0
+                    for child in db.children:
+                        var_name = str(child.name)
+                        if model.variable_mapped_signal(var_name) != sig_name:
+                            continue
+                        target = f"@main/variables_db/{child.hash_name}.mapped_signal"
+                        cmd = f"set {shlex.quote(target)} None"
+                        try:
+                            self._controller_execute_logged(cmd, source="signals_unmap_one")
+                            updated += 1
+                        except Exception:
+                            continue
+                    self._variables_panel.refresh()
+                    self.statusBar().showMessage(f"Removed mapping for {updated} variable(s) for signal {sig_name}.")
+                    self._refresh_signals_table()
+                    _REC_LOG.info("signals: unmap selected signal=%s removed=%d", sig_name, updated)
+                    return
+        # Keine Zeile selektiert -> gesamtes Mapping löschen (mit Nachfrage).
+        from PySide6.QtWidgets import QMessageBox
+
+        reply = QMessageBox.question(
+            self,
+            "Delete mapping",
+            "Delete all signal-to-variable mappings?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        updated = 0
+        for child in db.children:
+            target = f"@main/variables_db/{child.hash_name}.mapped_signal"
+            cmd = f"set {shlex.quote(target)} None"
+            try:
+                self._controller_execute_logged(cmd, source="signals_unmap_all")
+                updated += 1
+            except Exception:
+                continue
+        self._variables_panel.refresh()
+        self._refresh_signals_table()
+        _REC_LOG.info("signals: unmap all removed=%d", updated)
+        self.statusBar().showMessage(f"Removed mapping for {updated} variable(s).")
+
+    def _on_canvas_signal_mapping_drop(self, signal_name: str, variable_name: str) -> None:
+        # Drag from Signals table to a Variable block on canvas.
+        self._on_signals_row_drop(signal_name, variable_name)
+
+    def _on_signals_row_drop(self, signal_name: str, variable_name: str) -> None:
+        model = self._controller.model
+        db = model.get_variable_database()
+        if db is None:
+            return
+        for child in db.children:
+            var_name = str(child.name)
+            if var_name != variable_name:
+                continue
+            target = f"@main/variables_db/{child.hash_name}.mapped_signal"
+            cmd = f"set {shlex.quote(target)} {shlex.quote(signal_name)}"
+            try:
+                self._controller_execute_logged(cmd, source="signals_drop_map")
+            except Exception:
+                return
+            break
+        self._variables_panel.refresh()
+        self._refresh_signals_table()
 
     def _build_console_panel(self) -> QWidget:
         widget = QWidget(self)
@@ -1277,6 +2387,145 @@ class MainWindow(QMainWindow):
         self._append_console_line("Type 'help' for commands, 'exit' to quit.", self._get_output_color())
         self._show_prompt()
         return widget
+
+    def _plain_log_edit(self, parent: QWidget) -> QPlainTextEdit:
+        ed = QPlainTextEdit(parent)
+        ed.setReadOnly(True)
+        ed.setMaximumBlockCount(12_000)
+        ed.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        ed.setStyleSheet(
+            f"QPlainTextEdit {{ background-color: {CONSOLE_CHROME_BACKGROUND}; color: {CONSOLE_TAB_TEXT}; "
+            f"font-family: Consolas, 'Courier New', monospace; font-size: 11px; "
+            f"selection-background-color: {SELECTION_HIGHLIGHT}; selection-color: {SELECTION_HIGHLIGHT_TEXT}; }}\n"
+            + SCROLLBAR_STYLE_QSS
+        )
+        return ed
+
+    def _build_build_log_panel(self) -> QWidget:
+        widget = QWidget(self)
+        widget.setStyleSheet(f"background-color: {CONSOLE_CHROME_BACKGROUND};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 8)
+        layout.setSpacing(4)
+        lab = QLabel(
+            "Modell / Compile / Befehlsfehler (Dataflow, FMU-Metadaten, CCP).",
+            widget,
+        )
+        lab.setWordWrap(True)
+        lab.setStyleSheet(f"color: {CONSOLE_TAB_TEXT}; font-size: 11px;")
+        layout.addWidget(lab)
+        self._build_log_view = self._plain_log_edit(widget)
+        layout.addWidget(self._build_log_view, 1)
+        return widget
+
+    def _build_experiment_log_panel(self) -> QWidget:
+        widget = QWidget(self)
+        widget.setStyleSheet(f"background-color: {CONSOLE_CHROME_BACKGROUND};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 8)
+        layout.setSpacing(4)
+        path = main_log_path()
+        path_txt = str(path) if path else "(not configured)"
+        info = QLabel(
+            f"Laufzeit / Python-Logging (auch Datei: {path_txt})",
+            widget,
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {CONSOLE_TAB_TEXT}; font-size: 11px;")
+        layout.addWidget(info)
+        self._experiment_log_view = self._plain_log_edit(widget)
+        layout.addWidget(self._experiment_log_view, 1)
+        return widget
+
+    def _build_fmu_debug_panel(self) -> QWidget:
+        widget = QWidget(self)
+        widget.setStyleSheet(f"background-color: {CONSOLE_CHROME_BACKGROUND};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 8)
+        layout.setSpacing(4)
+        hint = QLabel(
+            "Letzte Simulations-Tick: skalarer Workspace-Wert pro FMU-Block (ein Slot pro Knoten).",
+            widget,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {CONSOLE_TAB_TEXT}; font-size: 11px;")
+        layout.addWidget(hint)
+        self._fmu_debug_table = QTableWidget(0, 2, widget)
+        self._fmu_debug_table.setHorizontalHeaderLabels(["FMU-Block", "Workspace"])
+        self._fmu_debug_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._fmu_debug_table.setStyleSheet(
+            f"QTableWidget {{ background-color: {CONSOLE_CHROME_BACKGROUND}; color: {CONSOLE_TAB_TEXT}; "
+            f"font-size: 11px; gridline-color: #555; }}"
+        )
+        layout.addWidget(self._fmu_debug_table, 1)
+        return widget
+
+    def _on_import_fmu(self) -> None:
+        dlg = FmuImportDialog(self, default_model_xy=(120.0, 80.0))
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            cmd = dlg.protocol_command()
+        except ValueError as exc:
+            QMessageBox.warning(self, "FMU importieren", str(exc))
+            return
+        self._execute_controller_line_for_ui(cmd)
+
+    def _append_build_log(self, text: str) -> None:
+        view = getattr(self, "_build_log_view", None)
+        if view is None:
+            return
+        view.appendPlainText(text)
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _append_experiment_log(self, text: str) -> None:
+        view = getattr(self, "_experiment_log_view", None)
+        if view is None:
+            return
+        view.appendPlainText(text)
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _flush_compile_diagnostics_to_build_log(self) -> None:
+        ctx = SimulationContext(model=self._controller.model)
+        DataflowCompilePass().run(ctx)
+        ts = time.strftime("%H:%M:%S")
+        ok = ctx.artifacts.get("dataflow") is not None
+        self._append_build_log(f"[{ts}] compile: dataflow={'ok' if ok else 'missing'}")
+        for line in ctx.diagnostics:
+            self._append_build_log(f"  {line}")
+
+    @staticmethod
+    def _truncate_for_log(text: str, max_len: int = 4000) -> str:
+        if len(text) <= max_len:
+            return text
+        return text[:max_len] + "…"
+
+    def _controller_execute_logged(self, cmd: str, *, source: str) -> str | None:
+        """Single entry for ``MinimalController.execute``: every protocol line is logged (file + Log tab)."""
+        line = cmd.strip()
+        _CMD_LOG.info("command [%s]: %s", source, line)
+        try:
+            result = self._controller.execute(cmd)
+        except CommandError as exc:
+            self._append_build_log(f"[command][{source}] ERROR: {exc}")
+            _CMD_LOG.error("command [%s] failed: %s | %s", source, line, exc)
+            raise
+        except Exception:
+            _CMD_LOG.exception("command [%s] raised: %s", source, line)
+            raise
+        if result is not None and str(result) != "":
+            _CMD_LOG.info(
+                "command [%s] ok: %s → %s",
+                source,
+                line,
+                MainWindow._truncate_for_log(str(result)),
+            )
+        else:
+            _CMD_LOG.info("command [%s] ok: %s", source, line)
+        return result
+
 
     def _get_output_color(self) -> str:
         try:
@@ -1302,9 +2551,11 @@ class MainWindow(QMainWindow):
         self._history.push(line)
 
         if stripped in {"exit", "quit"}:
+            _CMD_LOG.info("command [repl]: %s", stripped)
             self.close()
             return
         if stripped == "help":
+            _CMD_LOG.info("command [repl]: help")
             self._append_console_line("Built-in commands:", self._get_output_color())
             self._append_console_line("  help                    Show this help", self._get_output_color())
             self._append_console_line("  exit | quit             Exit CLI", self._get_output_color())
@@ -1323,14 +2574,14 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            result = self._controller.execute(stripped)
+            result = self._controller_execute_logged(stripped, source="repl")
         except CommandError as exc:
             self._append_console_line(f"error: {exc}", ERROR_COLOR)
             self._sync_simulation_mode_from_model()
             self._show_prompt()
             return
-        except Exception as exc:
-            self._append_console_line(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self._append_console_line("error: unexpected exception (see log file)", ERROR_COLOR)
             self._sync_simulation_mode_from_model()
             self._show_prompt()
             return
@@ -1358,14 +2609,17 @@ class MainWindow(QMainWindow):
         if file_name:
             self.statusBar().showMessage(f"Opened: {file_name}")
             prompt = str(self._controller.current.get("prompt_path"))
-            self._append_console_line(f'{prompt}> load "{file_name}"', DEFAULT_PROMPT_COLOR)
+            load_cmd = f'load "{file_name}"'
+            self._append_console_line(f"{prompt}> {load_cmd}", DEFAULT_PROMPT_COLOR)
             try:
-                result = self._controller.execute(f'load "{file_name}"')
+                result = self._controller_execute_logged(load_cmd, source="file")
                 if result:
                     self._append_console_line(result, self._get_output_color())
-                self._sync_diagram_view_from_core_after_console(f'load "{file_name}"')
-            except Exception as exc:
+                self._sync_diagram_view_from_core_after_console(load_cmd)
+            except CommandError as exc:
                 self._append_console_line(f"error: {exc}", ERROR_COLOR)
+            except Exception:
+                self._append_console_line("error: unexpected exception (see log file)", ERROR_COLOR)
             self._show_prompt()
         else:
             self.statusBar().showMessage("Open canceled")

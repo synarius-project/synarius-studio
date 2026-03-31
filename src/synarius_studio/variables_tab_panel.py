@@ -120,7 +120,7 @@ class VariablesTabPanel(QWidget):
     def refresh(self) -> None:
         rows = self._controller.model.variable_registry.rows_ordered_by_name()
         self._table.setRowCount(len(rows))
-        for i, (name, count) in enumerate(rows):
+        for i, (name, count, _mapped) in enumerate(rows):
             name_item = QTableWidgetItem(name)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             count_item = QTableWidgetItem(str(count))

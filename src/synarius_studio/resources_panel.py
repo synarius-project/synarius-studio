@@ -5,8 +5,9 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtCore import QPoint, Qt, QRectF, QMimeData
+from PySide6.QtGui import QDrag, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFrame,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 from synarius_core.controller import MinimalController
 from synarius_core.library import ParsedElement, ParsedLibrary
 
+from .diagram.placement_interactive import LIBRARY_ELEMENT_DRAG_MIME
 from .theme import (
     LIBRARY_HEADER_BACKGROUND,
     LIBRARY_HEADER_BUTTON_HOVER,
@@ -67,6 +69,47 @@ def _read_icon16_relative_path(element_dir: Path) -> str | None:
         if icon:
             return icon
     return None
+
+
+class DraggableLibraryElementIcon(QLabel):
+    """Tile from the Resources grid: drag ``type_key`` (``Lib.ElementId``) to the diagram canvas."""
+
+    def __init__(self, type_key: str, tooltip: str, pixmap: QPixmap, display_size: int, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._type_key = type_key
+        self._drag_start: QPoint | None = None
+        self.setPixmap(pixmap)
+        self.setFixedSize(display_size, display_size)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setToolTip(tooltip)
+        self.setStyleSheet(
+            "background-color: #ffffff; border: 1px solid #d8d4c4; border-radius: 3px; padding: 0px; margin: 0px;"
+        )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None or not (event.buttons() & Qt.MouseButton.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+        if (event.position().toPoint() - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        drag = QDrag(self)
+        md = QMimeData()
+        md.setData(LIBRARY_ELEMENT_DRAG_MIME, self._type_key.encode("utf-8"))
+        drag.setMimeData(drag)
+        drag.setPixmap(self.pixmap())
+        drag.setHotSpot(self._drag_start)
+        drag.exec(Qt.DropAction.CopyAction)
+        self._drag_start = None
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
 
 
 def _load_element_icon(element: ParsedElement, display_size: int, *, svg_zoom: float = 1.18) -> QPixmap:
@@ -184,13 +227,12 @@ def _build_library_icons_grid(
     elements = sorted(library.elements, key=lambda e: e.element_id.lower())
     for i, elem in enumerate(elements):
         pm = _load_element_icon(elem, display_size=icon_size)
-        lbl = QLabel()
-        lbl.setPixmap(pm)
-        lbl.setFixedSize(icon_size, icon_size)
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setToolTip(f"{elem.display_name} ({elem.element_id})")
-        lbl.setStyleSheet(
-            "background-color: #ffffff; border: 1px solid #d8d4c4; border-radius: 3px; padding: 0px; margin: 0px;"
+        type_key = f"{library.name}.{elem.element_id}"
+        lbl = DraggableLibraryElementIcon(
+            type_key,
+            f"{elem.display_name} ({elem.element_id})\nDrag to diagram to place.",
+            pm,
+            icon_size,
         )
         row, col = divmod(i, columns)
         grid.addWidget(lbl, row, col, Qt.AlignmentFlag.AlignCenter)
@@ -256,6 +298,22 @@ def build_resources_panel(controller: MinimalController, parent: QWidget | None 
             row_l.addStretch(1)
             section.content_layout().addWidget(grid_row)
             inner_layout.addWidget(section)
+
+    pr = getattr(controller, "plugin_registry", None)
+    if pr is not None and (pr.loaded_plugins or pr.load_errors or pr.capability_warnings):
+        chunks: list[str] = []
+        if pr.loaded_plugins:
+            chunks.append("Plugins: " + ", ".join(lp.manifest.name for lp in pr.loaded_plugins))
+        if pr.load_errors:
+            chunks.append("Plugin load errors:\n" + "\n".join(pr.load_errors[:5]))
+        if pr.capability_warnings:
+            chunks.append("\n".join(pr.capability_warnings[:5]))
+        plug_lbl = QLabel("\n\n".join(chunks), inner)
+        plug_lbl.setWordWrap(True)
+        plug_lbl.setStyleSheet(
+            f"color: #333; font-size: 10px; padding: 8px 10px; background-color: {RESOURCES_PANEL_BACKGROUND};"
+        )
+        inner_layout.addWidget(plug_lbl)
 
     inner_layout.addStretch(1)
     scroll.setWidget(inner)
