@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QIcon,
     QKeyEvent,
     QKeySequence,
+    QShowEvent,
     QTextCharFormat,
     QTextCursor,
 )
@@ -51,7 +52,7 @@ from PySide6.QtWidgets import (
 )
 from pathlib import Path
 
-from .app_logging import attach_gui_log_handler, main_log_path
+from .app_logging import attach_split_studio_gui_log_handlers, main_log_path
 from .log_emitter import LogEmitter
 from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
@@ -112,7 +113,7 @@ DEFAULT_INPUT_COLOR = "#FFFFFF"  # terminal-like user input
 ERROR_COLOR = "#FF6666"
 
 _CMD_LOG = logging.getLogger("synarius_studio.console")
-_REC_LOG = logging.getLogger("synarius_studio.recordings")
+_EXP_LOG = logging.getLogger("synarius_studio.experiment")
 
 
 @dataclass
@@ -319,16 +320,19 @@ class _RunLoopWorker(QObject):
         dt_s: float = 0.02,
         tick_interval_ms: int = 25,
         plugin_registry: PluginRegistry | None = None,
+        model_directory: Path | str | None = None,
     ) -> None:
         super().__init__()
         self._model = model
         self._dt_s = float(dt_s)
         self._tick_interval_ms = int(tick_interval_ms)
         self._plugin_registry = plugin_registry
+        self._model_directory = model_directory
         self._engine: SimpleRunEngine | None = None
         self._timer: QTimer | None = None
         self._stop_requested = False
         self._t0 = 0.0
+        self._diag_emit_idx = 0
 
     @Slot()
     def start(self) -> None:
@@ -337,8 +341,10 @@ class _RunLoopWorker(QObject):
                 self._model,
                 dt_s=self._dt_s,
                 plugin_registry=self._plugin_registry,
+                model_directory=self._model_directory,
             )
             self._engine.init()
+            self._diag_emit_idx = len(list(getattr(self._engine.context, "diagnostics", []) or []))
             if self._engine.context.artifacts.get("dataflow") is None:
                 self.start_failed.emit("Cannot simulate: invalid dataflow (e.g. cycle).")  # type: ignore[attr-defined]
                 self.stopped.emit()  # type: ignore[attr-defined]
@@ -370,6 +376,11 @@ class _RunLoopWorker(QObject):
             return
         try:
             self._engine.step()
+            diags = list(getattr(self._engine.context, "diagnostics", []) or [])
+            if self._diag_emit_idx < len(diags):
+                for line in diags[self._diag_emit_idx :]:
+                    _EXP_LOG.error("%s", str(line))
+                self._diag_emit_idx = len(diags)
             values: dict[str, float] = {}
             for node in self._model.iter_objects():
                 if not isinstance(node, Variable):
@@ -442,7 +453,9 @@ class MainWindow(QMainWindow):
         self._diagram_scene = SynariusDiagramScene(self)
         self._diagram_scene.setSceneRect(SCENE_RECT)
         self._diagram_scene.variable_sim_binding_toggle.connect(self._on_variable_sim_binding_toggle)
-        self._diagram_scene.open_dataviewer_requested.connect(self._on_open_dataviewer_requested)
+        self._diagram_scene.open_dataviewer_requested.connect(
+            self._on_dataviewer_canvas_open_widget_command
+        )
         # Strong refs to scene wrappers from ``items()``; PySide6 may drop items when these go away.
         self._diagram_item_refs: list[QGraphicsItem] = []
 
@@ -466,9 +479,17 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._sync_simulation_mode_from_model()
 
-        self._studio_log_emitter = LogEmitter(self)
-        self._studio_log_emitter.message.connect(self._append_experiment_log)
-        attach_gui_log_handler(self._studio_log_emitter)
+        self._general_log_emitter = LogEmitter(self)
+        self._build_log_emitter = LogEmitter(self)
+        self._experiment_log_emitter = LogEmitter(self)
+        self._general_log_emitter.message.connect(self._append_general_log_view)
+        self._build_log_emitter.message.connect(self._append_build_log_view)
+        self._experiment_log_emitter.message.connect(self._append_experiment_log_view)
+        attach_split_studio_gui_log_handlers(
+            self._general_log_emitter,
+            self._build_log_emitter,
+            self._experiment_log_emitter,
+        )
 
     def _create_actions(self) -> None:
         self._icons_dir = Path(__file__).resolve().parent / "icons"
@@ -643,9 +664,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.redo_action)
 
         toolbar.addSeparator()
-        toolbar.addAction(self.sim_mode_action)
-
-        toolbar.addSeparator()
         toolbar.addWidget(QLabel("Zoom:", self))
         self._zoom_combo = QComboBox(self)
         self._zoom_combo.setEditable(True)
@@ -745,6 +763,13 @@ class MainWindow(QMainWindow):
         self._diagram_palette_group = QActionGroup(self)
         self._diagram_palette_group.setExclusive(True)
         self._diagram_palette_actions: list[QAction] = []
+        # Mode toggle: top of canvas toolbar, separated from placement/sim controls below.
+        self._diagram_palette_toolbar.addAction(self.sim_mode_action)
+        self._diagram_palette_toolbar.addSeparator()
+        mode_gap = QWidget(canvas_host)
+        mode_gap.setFixedHeight(8)
+        mode_gap.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._diagram_palette_toolbar.addWidget(mode_gap)
         _palette_specs: tuple[tuple[str, str], ...] = (
             ("Place variable", "var"),
             ("Place + operator", "+"),
@@ -762,6 +787,14 @@ class MainWindow(QMainWindow):
             self._diagram_palette_toolbar.addAction(act)
             self._diagram_palette_actions.append(act)
             act.toggled.connect(self._on_diagram_palette_toggled)
+
+        # Reserve exactly the palette column height in sim mode (measured in edit mode / before hide).
+        self._diagram_palette_measured_stack_h = 0
+        self._diagram_palette_mode_spacer = QWidget(canvas_host)
+        self._diagram_palette_mode_spacer.setFixedHeight(0)
+        self._diagram_palette_mode_spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._diagram_palette_mode_spacer.setVisible(False)
+        self._diagram_palette_toolbar.addWidget(self._diagram_palette_mode_spacer)
 
         # Canvas-local simulation controls: mirror Play/Stop from the main toolbar,
         # only shown while simulation mode is active.
@@ -822,6 +855,7 @@ class MainWindow(QMainWindow):
             + studio_tab_bar_stylesheet(selected_tab_bg=CONSOLE_CHROME_BACKGROUND)
         )
         self.bottom_tabs.addTab(self._build_console_panel(), "Console")
+        self.bottom_tabs.addTab(self._build_general_log_panel(), "Log")
         self.bottom_tabs.addTab(self._build_build_log_panel(), "Build")
         self.bottom_tabs.addTab(self._build_experiment_log_panel(), "Experiment")
         self.bottom_tabs.addTab(self._build_fmu_debug_panel(), "FMU")
@@ -976,6 +1010,63 @@ class MainWindow(QMainWindow):
             return bool(value)
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
+    def _diagram_palette_action_stack_height(self) -> int:
+        """Total vertical extent of the placement action column (toolbar coordinates)."""
+        tb = self._diagram_palette_toolbar
+        top = 0
+        bottom = 0
+        found = False
+        for act in getattr(self, "_diagram_palette_actions", []):
+            w = tb.widgetForAction(act)
+            if w is None or not w.isVisible():
+                continue
+            g = w.geometry()
+            if g.height() <= 0:
+                continue
+            if not found:
+                top, bottom = g.top(), g.bottom()
+                found = True
+            else:
+                top = min(top, g.top())
+                bottom = max(bottom, g.bottom())
+        if not found:
+            return 0
+        return max(bottom - top + 1, 1)
+
+    def _diagram_palette_spacer_fallback_height(self) -> int:
+        row = max(22, self._diagram_palette_icon_px + 2)
+        return 5 * row
+
+    def _prepare_diagram_palette_mode_spacer_height(self) -> None:
+        if not hasattr(self, "_diagram_palette_mode_spacer"):
+            return
+        h = self._diagram_palette_action_stack_height()
+        if h >= 8:
+            self._diagram_palette_measured_stack_h = h
+        else:
+            h = self._diagram_palette_measured_stack_h or self._diagram_palette_spacer_fallback_height()
+        self._diagram_palette_mode_spacer.setFixedHeight(max(h, 8))
+
+    def _cache_diagram_palette_stack_height_after_layout(self) -> None:
+        if self.sim_mode_action.isChecked():
+            return
+        h = self._diagram_palette_action_stack_height()
+        if h >= 8:
+            self._diagram_palette_measured_stack_h = h
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._after_shown_diagram_palette_toolbar)
+
+    def _after_shown_diagram_palette_toolbar(self) -> None:
+        if not hasattr(self, "_diagram_palette_toolbar"):
+            return
+        if self.sim_mode_action.isChecked():
+            if self._diagram_palette_measured_stack_h >= 8:
+                self._diagram_palette_mode_spacer.setFixedHeight(self._diagram_palette_measured_stack_h)
+            return
+        self._cache_diagram_palette_stack_height_after_layout()
+
     def _sync_simulation_mode_from_model(self) -> None:
         try:
             raw = self._controller.model.root.get("simulation_mode")
@@ -1010,8 +1101,14 @@ class MainWindow(QMainWindow):
         else:
             self._sync_play_actions_checked(False)
         # Canvas toolbar: hide placement palette in simulation, show Play/Stop/Record there.
+        if on:
+            self._prepare_diagram_palette_mode_spacer_height()
         for act in getattr(self, "_diagram_palette_actions", []):
             act.setVisible(not on)
+        if hasattr(self, "_diagram_palette_mode_spacer"):
+            self._diagram_palette_mode_spacer.setVisible(on)
+        if not on:
+            QTimer.singleShot(0, self._cache_diagram_palette_stack_height_after_layout)
         if (
             hasattr(self, "_canvas_play_action")
             and hasattr(self, "_canvas_stop_action")
@@ -1024,10 +1121,11 @@ class MainWindow(QMainWindow):
             self._canvas_stop_action.setEnabled(on and self._simulation_running)
             self._canvas_record_action.setEnabled(on)
         self.statusBar().showMessage("Simulation mode" if on else "Ready.")
-        btn = self._main_toolbar.widgetForAction(self.sim_mode_action)
-        if isinstance(btn, QToolButton):
-            btn.setCheckable(True)
-            btn.setChecked(on)
+        for tb in (self._main_toolbar, self._diagram_palette_toolbar):
+            btn = tb.widgetForAction(self.sim_mode_action)
+            if isinstance(btn, QToolButton):
+                btn.setCheckable(True)
+                btn.setChecked(on)
 
     def _on_sim_mode_action_toggled(self, checked: bool) -> None:
         if self._sim_mode_suppress_action:
@@ -1161,12 +1259,13 @@ class MainWindow(QMainWindow):
     def _try_start_simulation(self) -> None:
         if not self.sim_mode_action.isChecked():
             return
+        self._clear_experiment_log_view()
         # Jede Simulation mit frischer Zeitachse und leeren Live-Buffern starten,
         # damit keine Totzeit/Altwerte aus vorherigen Läufen sichtbar bleiben.
         self._live_series_buffers.clear()
         self._live_series_t0 = time.perf_counter()
         self._reset_open_live_dataviewers_for_new_run()
-        _REC_LOG.info(
+        _EXP_LOG.info(
             "simulation start: reset live buffers (size=%d), live_t0=%.6f",
             len(self._live_series_buffers),
             self._live_series_t0,
@@ -1175,16 +1274,20 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_canvas_record_action") and self._canvas_record_action.isChecked():
             self._record_series_buffers.clear()
             self._record_series_t0 = time.perf_counter()
-            _REC_LOG.info(
+            _EXP_LOG.info(
                 "simulation start: recording enabled, reset record buffers (size=%d), record_t0=%.6f",
                 len(self._record_series_buffers),
                 self._record_series_t0,
             )
         else:
-            _REC_LOG.info("simulation start: recording disabled")
+            _EXP_LOG.info("simulation start: recording disabled")
         if not self._warn_if_fmu_without_runtime_plugin():
             self._sync_play_actions_checked(False)
             return
+        _md = None
+        _lp = self._controller.last_loaded_script_path
+        if _lp is not None:
+            _md = _lp.parent
         # Dedicated run-loop worker thread (GUI remains responsive).
         self._run_thread = QThread(self)
         self._run_worker = _RunLoopWorker(
@@ -1192,6 +1295,7 @@ class MainWindow(QMainWindow):
             dt_s=0.02,
             tick_interval_ms=25,
             plugin_registry=self._controller.plugin_registry,
+            model_directory=_md,
         )
         self._run_worker.moveToThread(self._run_thread)
         self._run_thread.started.connect(self._run_worker.start)
@@ -1230,19 +1334,19 @@ class MainWindow(QMainWindow):
             if viewer is None:
                 continue
             for name in names:
-                # Use a neutral placeholder, not the previous run's last value.
+                # Keep series empty until the first real tick arrives.
                 try:
                     viewer.set_channel_data(
                         name,
-                        np.asarray([0.0], dtype=np.float64),
-                        np.asarray([0.0], dtype=np.float64),
+                        np.asarray([], dtype=np.float64),
+                        np.asarray([], dtype=np.float64),
                     )
                 except Exception:
                     continue
 
     def _on_worker_start_failed(self, message: str) -> None:
         self.statusBar().showMessage(message or "Cannot start simulation.")
-        self._append_experiment_log(f"[simulation] start failed: {message or 'unknown'}")
+        _EXP_LOG.error("simulation start failed: %s", message or "unknown")
         self._simulation_running = False
         self._sync_play_actions_checked(False)
 
@@ -1338,7 +1442,7 @@ class MainWindow(QMainWindow):
             selected_filter,
         )
         if not path_str:
-            _REC_LOG.info("recording: user cancelled save dialog")
+            _EXP_LOG.info("recording: user cancelled save dialog")
             return
 
         out_path = Path(path_str)
@@ -1353,7 +1457,7 @@ class MainWindow(QMainWindow):
             self._record_last_format = "mdf"
 
         try:
-            _REC_LOG.info(
+            _EXP_LOG.info(
                 "recording: saving buffers (%d channels) to %s as %s",
                 len(self._record_series_buffers),
                 out_path,
@@ -1376,7 +1480,7 @@ class MainWindow(QMainWindow):
         from datetime import datetime
 
         ts = datetime.now().strftime("%H:%M:%S")
-        _REC_LOG.info("recording: registered %s at %s", path, ts)
+        _EXP_LOG.info("recording: registered %s at %s", path, ts)
         table.insertRow(0)
         name_item = QTableWidgetItem(path.name)
         time_item = QTableWidgetItem(ts)
@@ -1416,13 +1520,13 @@ class MainWindow(QMainWindow):
         if not rec_path.is_file() and rec_path.suffix.lower() == ".mdf":
             alt = rec_path.with_suffix(".mf4")
             if alt.is_file():
-                _REC_LOG.info(
+                _EXP_LOG.info(
                     "recording: mapped missing %s to existing %s", rec_path, alt
                 )
                 rec_path = alt
                 # Pfad im Modell korrigieren, damit zukünftige Klicks direkt passen.
                 item.setData(Qt.ItemDataRole.UserRole, str(rec_path))
-        _REC_LOG.info("recording: double-click on %s (exists=%s)", rec_path, rec_path.is_file())
+        _EXP_LOG.info("recording: double-click on %s (exists=%s)", rec_path, rec_path.is_file())
 
         # DataViewer-App-Stack dynamisch verfügbar machen (wie bei Live-DataViewer).
         try:
@@ -1440,7 +1544,7 @@ class MainWindow(QMainWindow):
             from synarius_dataviewer.widgets.data_viewer import DataViewerShell
             from synarius_dataviewer.io import load_timeseries_file
         except Exception as exc:
-            _REC_LOG.error("recording: could not import DataViewer; %s", exc)
+            _EXP_LOG.error("recording: could not import DataViewer; %s", exc)
             return
 
         try:
@@ -1456,10 +1560,10 @@ class MainWindow(QMainWindow):
                 font.setStrikeOut(True)
                 it.setFont(font)
                 it.setForeground(QColor("red"))
-            _REC_LOG.warning("recording: file not found when opening: %s", rec_path)
+            _EXP_LOG.warning("recording: file not found when opening: %s", rec_path)
             return
         except Exception as exc:
-            _REC_LOG.error("recording: error loading %s: %s", rec_path, exc)
+            _EXP_LOG.error("recording: error loading %s: %s", rec_path, exc)
             return
 
         # Einfacher Dialog mit einem DataViewerShell, der alle Kanäle der Messung lädt.
@@ -1509,8 +1613,26 @@ class MainWindow(QMainWindow):
         self._append_live_series_samples()
         self._update_live_dataviewers()
 
-    def _on_open_dataviewer_requested(self, dv: DataViewer) -> None:
-        """Doppelklick auf DataViewer: echtes Synarius-DataViewer-Widget öffnen/fokussieren."""
+    def _on_dataviewer_canvas_open_widget_command(self, dv: DataViewer) -> None:
+        """Canvas double-click: same as CCP ``set <DataViewer>.open_widget true``."""
+        h = shlex.quote(dv.hash_name)
+        self._run_protocol_lines_as_console([f"set {h}.open_widget true"])
+
+    def _flush_dataviewer_open_widget_from_model(self) -> None:
+        """If core marked ``open_widget`` true, open/focus the dialog and clear the flag (no extra CCP line)."""
+        for dv in self._controller.model.iter_dataviewers():
+            try:
+                if "open_widget" not in dv.attribute_dict:
+                    continue
+                if not bool(dv.get("open_widget")):
+                    continue
+                self._open_live_dataviewer_dialog(dv)
+                dv.set("open_widget", False)
+            except Exception:
+                continue
+
+    def _open_live_dataviewer_dialog(self, dv: DataViewer) -> None:
+        """Show or focus the Synarius DataViewer window for this model instance."""
         try:
             vid = int(dv.get("dataviewer_id"))
         except Exception:
@@ -1652,8 +1774,8 @@ class MainWindow(QMainWindow):
     def _ensure_live_series_seed(self, name: str) -> None:
         if name in self._live_series_buffers:
             return
-        # Keep channel creation stable in DataViewer, but avoid carrying over stale last-run values.
-        self._live_series_buffers[name] = ([0.0], [0.0])
+        # Start empty so the first displayed sample is the first simulation value, not an artificial 0-seed.
+        self._live_series_buffers[name] = ([], [])
 
     def _append_live_series_samples(
         self,
@@ -1700,7 +1822,7 @@ class MainWindow(QMainWindow):
         ):
             return
         t = float(t_override) if t_override is not None else (time.perf_counter() - self._record_series_t0)
-        _REC_LOG.debug("recording tick at t=%.6f", t)
+        _EXP_LOG.debug("recording tick at t=%.6f", t)
         if value_by_name is None:
             value_by_name = {}
             for node in self._controller.model.iter_objects():
@@ -1778,7 +1900,7 @@ class MainWindow(QMainWindow):
                 try:
                     viewer.append_samples(name, t_arr, np.asarray([y], dtype=np.float64), max_points=200_000)
                 except Exception as exc:
-                    _REC_LOG.debug("live-dv append failed for %s: %s", name, exc)
+                    _EXP_LOG.debug("live-dv append failed for %s: %s", name, exc)
                     continue
 
         # Regelmäßig autoscalen (insb. direkt nach Start/bei großen Sprüngen), damit Kurven sichtbar bleiben.
@@ -1892,6 +2014,7 @@ class MainWindow(QMainWindow):
             self._refresh_variable_value_labels()
         # Keep open DataViewer dialogs in sync with changed measure bindings immediately.
         self._sync_open_live_dataviewers_channels()
+        self._flush_dataviewer_open_widget_from_model()
         self._sync_simulation_mode_from_model()
         self._apply_controller_selection_to_scene()
         self._variables_panel.refresh()
@@ -2201,7 +2324,7 @@ class MainWindow(QMainWindow):
                 rows.append((child.name, len(xs), mapped_var))
         rows.sort(key=lambda x: x[0].lower())
         table.setRowCount(len(rows))
-        _REC_LOG.info(
+        _EXP_LOG.info(
             "signals: refresh table rows=%d mapped_signals=%d",
             len(rows),
             len(mapped_var_by_signal),
@@ -2246,7 +2369,7 @@ class MainWindow(QMainWindow):
                 dict.__setitem__(stimuli.attribute_dict, "source_file", (str(path), None, None, True, True))
             else:
                 stimuli.set("source_file", str(path))
-            _REC_LOG.info(
+            _EXP_LOG.info(
                 "signals: loaded %d channels from %s into stimuli",
                 len(bundle.channel_names()),
                 path,
@@ -2282,7 +2405,7 @@ class MainWindow(QMainWindow):
                 continue
         self._variables_panel.refresh()
         self._refresh_signals_table()
-        _REC_LOG.info("signals: map-by-names mapped=%d", mapped)
+        _EXP_LOG.info("signals: map-by-names mapped=%d", mapped)
         self.statusBar().showMessage(f"Mapped {mapped} variable(s) by name.")
 
     def _on_delete_mapping_clicked(self) -> None:
@@ -2314,7 +2437,7 @@ class MainWindow(QMainWindow):
                     self._variables_panel.refresh()
                     self.statusBar().showMessage(f"Removed mapping for {updated} variable(s) for signal {sig_name}.")
                     self._refresh_signals_table()
-                    _REC_LOG.info("signals: unmap selected signal=%s removed=%d", sig_name, updated)
+                    _EXP_LOG.info("signals: unmap selected signal=%s removed=%d", sig_name, updated)
                     return
         # Keine Zeile selektiert -> gesamtes Mapping löschen (mit Nachfrage).
         from PySide6.QtWidgets import QMessageBox
@@ -2339,7 +2462,7 @@ class MainWindow(QMainWindow):
                 continue
         self._variables_panel.refresh()
         self._refresh_signals_table()
-        _REC_LOG.info("signals: unmap all removed=%d", updated)
+        _EXP_LOG.info("signals: unmap all removed=%d", updated)
         self.statusBar().showMessage(f"Removed mapping for {updated} variable(s).")
 
     def _on_canvas_signal_mapping_drop(self, signal_name: str, variable_name: str) -> None:
@@ -2399,6 +2522,25 @@ class MainWindow(QMainWindow):
         )
         return ed
 
+    def _build_general_log_panel(self) -> QWidget:
+        widget = QWidget(self)
+        widget.setStyleSheet(f"background-color: {CONSOLE_CHROME_BACKGROUND};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 8)
+        layout.setSpacing(4)
+        path = main_log_path()
+        path_txt = str(path) if path else "(not configured)"
+        info = QLabel(
+            f"Allgemeines Logging (alle Meldungen; auch Datei: {path_txt}).",
+            widget,
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {CONSOLE_TAB_TEXT}; font-size: 11px;")
+        layout.addWidget(info)
+        self._general_log_view = self._plain_log_edit(widget)
+        layout.addWidget(self._general_log_view, 1)
+        return widget
+
     def _build_build_log_panel(self) -> QWidget:
         widget = QWidget(self)
         widget.setStyleSheet(f"background-color: {CONSOLE_CHROME_BACKGROUND};")
@@ -2406,7 +2548,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 4, 8, 8)
         layout.setSpacing(4)
         lab = QLabel(
-            "Modell / Compile / Befehlsfehler (Dataflow, FMU-Metadaten, CCP).",
+            "Build / Compile / Modell und Protokoll-Fehler (wird vor jedem Diagramm-Compile geleert).",
             widget,
         )
         lab.setWordWrap(True)
@@ -2422,10 +2564,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 4, 8, 8)
         layout.setSpacing(4)
-        path = main_log_path()
-        path_txt = str(path) if path else "(not configured)"
         info = QLabel(
-            f"Laufzeit / Python-Logging (auch Datei: {path_txt})",
+            "Experiment / Simulation / Messungen / Aufzeichnung (wird vor jedem Simulationsstart geleert).",
             widget,
         )
         info.setWordWrap(True)
@@ -2469,7 +2609,15 @@ class MainWindow(QMainWindow):
             return
         self._execute_controller_line_for_ui(cmd)
 
-    def _append_build_log(self, text: str) -> None:
+    def _append_general_log_view(self, text: str) -> None:
+        view = getattr(self, "_general_log_view", None)
+        if view is None:
+            return
+        view.appendPlainText(text)
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _append_build_log_view(self, text: str) -> None:
         view = getattr(self, "_build_log_view", None)
         if view is None:
             return
@@ -2477,7 +2625,7 @@ class MainWindow(QMainWindow):
         bar = view.verticalScrollBar()
         bar.setValue(bar.maximum())
 
-    def _append_experiment_log(self, text: str) -> None:
+    def _append_experiment_log_view(self, text: str) -> None:
         view = getattr(self, "_experiment_log_view", None)
         if view is None:
             return
@@ -2485,14 +2633,26 @@ class MainWindow(QMainWindow):
         bar = view.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    def _clear_build_log_view(self) -> None:
+        view = getattr(self, "_build_log_view", None)
+        if view is not None:
+            view.clear()
+
+    def _clear_experiment_log_view(self) -> None:
+        view = getattr(self, "_experiment_log_view", None)
+        if view is not None:
+            view.clear()
+
     def _flush_compile_diagnostics_to_build_log(self) -> None:
+        self._clear_build_log_view()
         ctx = SimulationContext(model=self._controller.model)
         DataflowCompilePass().run(ctx)
         ts = time.strftime("%H:%M:%S")
         ok = ctx.artifacts.get("dataflow") is not None
-        self._append_build_log(f"[{ts}] compile: dataflow={'ok' if ok else 'missing'}")
+        blog = logging.getLogger("synarius_studio.build")
+        blog.info("[%s] compile: dataflow=%s", ts, "ok" if ok else "missing")
         for line in ctx.diagnostics:
-            self._append_build_log(f"  {line}")
+            blog.info("  %s", line)
 
     @staticmethod
     def _truncate_for_log(text: str, max_len: int = 4000) -> str:
@@ -2501,13 +2661,12 @@ class MainWindow(QMainWindow):
         return text[:max_len] + "…"
 
     def _controller_execute_logged(self, cmd: str, *, source: str) -> str | None:
-        """Single entry for ``MinimalController.execute``: every protocol line is logged (file + Log tab)."""
+        """Single entry for ``MinimalController.execute``: every protocol line is logged (file + GUI)."""
         line = cmd.strip()
         _CMD_LOG.info("command [%s]: %s", source, line)
         try:
             result = self._controller.execute(cmd)
         except CommandError as exc:
-            self._append_build_log(f"[command][{source}] ERROR: {exc}")
             _CMD_LOG.error("command [%s] failed: %s | %s", source, line, exc)
             raise
         except Exception:

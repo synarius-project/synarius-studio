@@ -75,7 +75,8 @@ jobs:
               <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
               <Feature Id="MainFeature" Title="synarius-studio" Level="1">
                 <ComponentRef Id="MainExeComponent" />
-                <ComponentRef Id="BundledSampleSynComponent" />
+                <ComponentRef Id="BundledExamplesComponent" />
+                <ComponentRef Id="BundledBouncingBallComponent" />
                 <ComponentRef Id="StartMenuShortcutComponent" />
               </Feature>
               <UIRef Id="WixUI_InstallDir" />
@@ -98,9 +99,20 @@ jobs:
                     <Component Id="MainExeComponent" Guid="*">
                       <File Id="MainExeFile" Source="dist\synarius-studio.exe" KeyPath="yes" />
                     </Component>
-                    <Component Id="BundledSampleSynComponent" Guid="*">
-                      <File Id="BundledTestSyn" Source="src\synarius_studio\resources\test.syn" KeyPath="yes" />
+                    <Component Id="BundledExamplesComponent" Guid="*">
+                      <File Id="BundledExampleModellingSyn" Source="src\synarius_studio\resources\example_modelling.syn" KeyPath="yes" />
+                      <File Id="BundledExampleExperimentSyn" Source="src\synarius_studio\resources\example_experiment.syn" />
+                      <File Id="BundledExampleFmuSyn" Source="src\synarius_studio\resources\example_fmu.syn" />
                     </Component>
+                    <Directory Id="ThirdPartyDir" Name="third_party">
+                      <Directory Id="BouncingBallDir" Name="bouncing_ball">
+                        <Component Id="BundledBouncingBallComponent" Guid="*">
+                          <File Id="BundledBouncingBallFmu" Source="src\synarius_studio\resources\third_party\bouncing_ball\BouncingBall.fmu" KeyPath="yes" />
+                          <File Id="BundledBouncingBallLicense" Source="src\synarius_studio\resources\third_party\bouncing_ball\LICENSE_BouncingBall.txt" />
+                          <File Id="BundledBouncingBallNotices" Source="src\synarius_studio\resources\third_party\bouncing_ball\THIRD_PARTY_NOTICES.md" />
+                        </Component>
+                      </Directory>
+                    </Directory>
                   </Directory>
                 </Directory>
                 <Directory Id="ProgramMenuFolder">

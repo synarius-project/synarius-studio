@@ -20,7 +20,6 @@ from synarius_core.model import Connector
 
 from .dataflow_items import (
     CONNECTOR_LINE_WIDTH,
-    MARK_HIGHLIGHT_COLOR,
     FmuBlockItem,
     OperatorBlockItem,
     VariableBlockItem,
@@ -64,15 +63,32 @@ def _append_orthogonal_to_target(
             if abs(lx - tx) <= eps:
                 h = False
                 continue
-            bends.append(_snap_scalar_half_module(float(tx)))
+            bends.append(float(tx))
             lx = float(tx)
         else:
             if abs(ly - ty) <= eps:
                 h = True
                 continue
-            bends.append(_snap_scalar_half_module(float(ty)))
+            bends.append(float(ty))
             ly = float(ty)
         h = not h
+
+
+def _normalize_final_bends(bends: list[float], tx: float, ty: float, *, eps: float = 1e-3) -> list[float]:
+    """
+    Persist only the essential support coordinate for new connectors.
+
+    During interactive routing we may transiently resolve a final y-bend to reach the target.
+    For persistence this y component is redundant (it is implied by target y), so keep only
+    the first x-support point where possible.
+    """
+    out = [float(x) for x in bends]
+    if len(out) == 2 and abs(out[1] - ty) <= eps:
+        out = [out[0]]
+    # Avoid degenerate "same x as target" first support; this causes visual U-detours.
+    if len(out) == 1 and abs(out[0] - tx) <= eps:
+        return []
+    return out
 
 
 def _pin_instance_id(block: VariableBlockItem | OperatorBlockItem | FmuBlockItem) -> UUID | None:
@@ -163,7 +179,7 @@ def _pen_cursor() -> QCursor:
 
 
 class ConnectorRouteSketchItem(QGraphicsObject):
-    """Solid preview polyline while routing (same hue as block selection highlight)."""
+    """Solid grey preview polyline while routing."""
 
     def __init__(self, parent: QGraphicsItem | None = None) -> None:
         super().__init__(parent)
@@ -174,8 +190,7 @@ class ConnectorRouteSketchItem(QGraphicsObject):
         self._phase_h = True
         self._mx = 0.0
         self._my = 0.0
-        line_color = QColor(MARK_HIGHLIGHT_COLOR)
-        line_color.setAlpha(255)
+        line_color = QColor(120, 120, 120)
         self._pen = QPen(line_color, max(CONNECTOR_LINE_WIDTH * 1.35, 2.0))
         self._pen.setStyle(Qt.PenStyle.SolidLine)
         self._pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -210,6 +225,10 @@ class ConnectorRouteSketchItem(QGraphicsObject):
             pts.append(QPointF(cx, cy))
         rx, ry = _rubber_xy(self._sx, self._sy, self._bends, self._phase_h, self._mx, self._my)
         pts.append(QPointF(rx, ry))
+        # Extend the temporary route to the actual mouse position, so the preview
+        # reaches the cursor tip instead of stopping at the last orthogonal knee.
+        if abs(self._mx - rx) > 1e-6 or abs(self._my - ry) > 1e-6:
+            pts.append(QPointF(self._mx, self._my))
         return pts
 
     def boundingRect(self) -> QRectF:
@@ -366,6 +385,12 @@ class ConnectorRouteTool(QObject):
         return True
 
     def _commit_corner(self) -> None:
+        # New connector drawing stores only the first support point.
+        # The last bend is resolved dynamically against the target pin at completion time.
+        if self._bends:
+            self._phase_h = not self._phase_h
+            self._sync_sketch()
+            return
         rx, ry = _rubber_xy(self._sx, self._sy, self._bends, self._phase_h, self._mx, self._my)
         if self._phase_h:
             self._bends.append(_snap_scalar_half_module(rx))
@@ -388,6 +413,7 @@ class ConnectorRouteTool(QObject):
         bends = list(self._bends)
         lx, ly = _endpoint_after_bends(self._sx, self._sy, bends)
         _append_orthogonal_to_target(bends, lx, ly, self._phase_h, tx, ty)
+        bends = _normalize_final_bends(bends, tx, ty)
 
         src_tok = self._src_block.controller_select_token()
         dst_tok = dst_block.controller_select_token()

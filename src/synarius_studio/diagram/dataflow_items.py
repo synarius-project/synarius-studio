@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import NamedTuple
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
@@ -17,7 +18,6 @@ from PySide6.QtGui import (
     QPolygonF,
 )
 from PySide6.QtWidgets import (
-    QGraphicsDropShadowEffect,
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsRectItem,
@@ -31,17 +31,35 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.model import BasicOperator, BasicOperatorType, Connector, DataViewer, ElementaryInstance, Variable
-from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
+from synarius_core.model import (
+    BasicOperator,
+    BasicOperatorType,
+    Connector,
+    DataViewer,
+    ElementaryInstance,
+    Pin,
+    Variable,
+    elementary_diagram_subtitle_for_geometry,
+)
+from synarius_core.model.diagram_geometry import (
+    ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE,
+    elementary_lib_header_height_scene,
+    variable_diagram_block_width_scene,
+)
 from synarius_core.model.connector_routing import (
     auto_orthogonal_bends,
     bends_absolute_to_relative,
     bends_relative_to_absolute,
     orthogonal_drag_segments,
     polyline_for_endpoints,
+    simplify_axis_aligned_polyline,
 )
 
-from ..theme import selection_highlight_qcolor
+from ..theme import (
+    DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX,
+    DIAGRAM_SELECTION_OVERHANG_PX,
+    selection_highlight_qcolor,
+)
 
 # Global UI scale: 100 % nominal view uses 70 % of the former linear size (reverses mistaken 100/70 bump).
 UI_SCALE = 70.0 / 100.0
@@ -60,6 +78,8 @@ SVG_SYMBOL_SIZE = _GLYPH_BASE * 1.2
 # Match connector edges (stroke weight). Block outlines are 2× this.
 CONNECTOR_LINE_WIDTH = 1.35
 BLOCK_OUTLINE_WIDTH = 2.0 * CONNECTOR_LINE_WIDTH
+# Uniform body fill for variable / operator / FMU / DataViewer blocks on the canvas.
+DIAGRAM_BLOCK_FILL = QColor(255, 255, 255)
 _REF_PIN_MOD = 19.0  # legacy reference for pin proportions vs MODULE
 # Longer horizontal stubs (variables/operators).
 PIN_LINE_LENGTH = MODULE * (15.0 / _REF_PIN_MOD)
@@ -67,6 +87,13 @@ PIN_LINE_LENGTH = MODULE * (15.0 / _REF_PIN_MOD)
 _PIN_TRI_SCALE = 2.0
 PIN_TRI_DEPTH = MODULE * (6.0 / _REF_PIN_MOD) * _PIN_TRI_SCALE
 PIN_TRI_HALF_HEIGHT = MODULE * (4.5 / _REF_PIN_MOD) * _PIN_TRI_SCALE
+# Wire attachment distance from block edge: snapped to half-module so pins sit on the diagram grid.
+_HALF_MODULE = MODULE * 0.5
+_PIN_STUB_RAW = PIN_LINE_LENGTH + PIN_TRI_DEPTH
+PIN_STUB_OUTER_REACH = max(
+    PIN_TRI_DEPTH + 1e-9,
+    round(_PIN_STUB_RAW / _HALF_MODULE) * _HALF_MODULE,
+)
 # Extra stub segment in simulation mode for large stimulate/measure markers.
 PIN_SIM_EXTENSION = MODULE * 1.2
 SIM_PIN_GREEN = QColor(0, 128, 48)
@@ -77,16 +104,11 @@ _FILL_BLUE = QColor(36, 104, 220)
 
 # Global selection / “marked” highlight (from ``theme.selection_highlight_qcolor``).
 MARK_HIGHLIGHT_COLOR = selection_highlight_qcolor()
-# Outward extent from the element outline (scene px); same for blocks and connectors.
-MARK_BLOCK_PADDING = 3.0
-MARK_VARIABLE_HIGHLIGHT_RADIUS = max(3.5, MODULE * 0.22)
-MARK_OPERATOR_HIGHLIGHT_RADIUS = max(2.5, MODULE * 0.12)
-# Connector hit target: line + same padding as blocks + small comfort margin.
+# Connector hit target: line + same overhang as blocks + small comfort margin.
 _MARK_CONNECTOR_HIT_SLACK = 8.0
 # Hit-test radius around a draggable leg (scene px); broad segment quads.
 _CONNECTOR_BEND_DRAG_HIT = 12.0
 _CONNECTOR_BEND_DRAG_HIT_SQ = _CONNECTOR_BEND_DRAG_HIT * _CONNECTOR_BEND_DRAG_HIT
-
 
 def _bends_list_equal(a: list[float], b: list[float]) -> bool:
     if len(a) != len(b):
@@ -131,6 +153,25 @@ def _snap_pos_half_module(pos: QPointF) -> QPointF:
 def _snap_scalar_half_module(v: float) -> float:
     step = MODULE * 0.5
     return round(v / step) * step
+
+
+def _orthogonal_stroke_polyline(tpl: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge collinear vertices; snap interior bends only — endpoints stay on pin coordinates."""
+    sim = simplify_axis_aligned_polyline(list(tpl))
+    if not sim:
+        return sim
+    n = len(sim)
+    out: list[tuple[float, float]] = []
+    for i, (x, y) in enumerate(sim):
+        if i == 0 or i == n - 1:
+            px, py = float(x), float(y)
+        else:
+            px = _snap_scalar_half_module(x)
+            py = _snap_scalar_half_module(y)
+        if out and abs(px - out[-1][0]) < 1e-6 and abs(py - out[-1][1]) < 1e-6:
+            continue
+        out.append((px, py))
+    return out
 
 
 def _refresh_connectors_touching(block: QGraphicsItem) -> None:
@@ -301,18 +342,6 @@ def _paint_basic_operator_glyph(
         _fill_and_outline_glyph(painter, cross, outline_w)
 
 
-def _apply_light_diagonal_shadow(item: QGraphicsRectItem) -> None:
-    """Soft shadow, slightly down-right (tighter offset than before, darker for readability)."""
-    ox = max(1.0, MODULE * 0.07)
-    oy = max(1.2, MODULE * 0.09)
-    blur = max(4.0, MODULE * 0.62)
-    fx = QGraphicsDropShadowEffect()
-    fx.setBlurRadius(blur)
-    fx.setColor(QColor(18, 18, 22, 95))
-    fx.setOffset(ox, oy)
-    item.setGraphicsEffect(fx)
-
-
 def _font_for_variable_name(name: str, max_width: float, max_height: float) -> QFont:
     """Largest font (pixel size) that fits inside the label area with a small margin."""
     margin_h = max(1.0, max_height * 0.08)
@@ -368,14 +397,14 @@ class _InputPinItem(QGraphicsObject):
         self.update()
 
     def boundingRect(self) -> QRectF:
-        w = PIN_LINE_LENGTH + PIN_TRI_DEPTH
+        w = PIN_STUB_OUTER_REACH
         base_h = PIN_TRI_HALF_HEIGHT * 2.0 + 4.0
         down = MODULE * 1.05 if self._show_stim_arrow else 0.0
         return QRectF(-w, -base_h / 2.0, w, base_h + down)
 
     def outer_attachment_local(self) -> QPointF:
         # Always use the base pin length so connectors do not move when stimulation markers appear.
-        return QPointF(-(PIN_LINE_LENGTH + PIN_TRI_DEPTH), 0.0)
+        return QPointF(-PIN_STUB_OUTER_REACH, 0.0)
 
     def paint(
         self,
@@ -388,9 +417,8 @@ class _InputPinItem(QGraphicsObject):
         pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(pen)
         e = PIN_TRI_DEPTH
-        total = PIN_LINE_LENGTH
         painter.drawLine(
-            QPointF(-(total + e), 0.0),
+            QPointF(-PIN_STUB_OUTER_REACH, 0.0),
             QPointF(-e, 0.0),
         )
         painter.setBrush(QColor(35, 35, 35))
@@ -409,7 +437,7 @@ class _InputPinItem(QGraphicsObject):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             # Arrow is centered just outside the pin's triangle tip.
             # Spitze endet direkt am Pin (y = 0); Schaft + Dreieck zeigen nach unten.
-            cx = -(total + e) + MODULE * 0.12
+            cx = -PIN_STUB_OUTER_REACH + MODULE * 0.12
             tip_y = 0.0
             base_y = MODULE * 0.55
             half_w = MODULE * 0.4
@@ -454,10 +482,12 @@ class _OutputPinItem(QGraphicsObject):
 
     def configure_sim_output(self, canvas_sim_on: bool, measure_ids: list[int]) -> None:
         ids = [int(x) for x in measure_ids] if measure_ids else []
-        if ids == self._measure_ids:
+        # Same rule as stimulation on the input pin: markers only in simulation canvas mode.
+        show = ids if canvas_sim_on else []
+        if show == self._measure_ids:
             return
         self.prepareGeometryChange()
-        self._measure_ids = ids
+        self._measure_ids = show
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -466,14 +496,14 @@ class _OutputPinItem(QGraphicsObject):
         if self._measure_ids:
             up = MODULE * 1.0
             label_h = max(MODULE * 1.15, 12.0)
-        w = PIN_LINE_LENGTH + PIN_TRI_DEPTH + 2.0
+        w = PIN_STUB_OUTER_REACH + 2.0
         base_h = PIN_TRI_HALF_HEIGHT * 2.0 + 4.0
         h = base_h + label_h + up
         return QRectF(-1.0, -h / 2.0 - up, w, h)
 
     def outer_attachment_local(self) -> QPointF:
         # Always use the base pin length so connectors do not move when measurement markers appear.
-        return QPointF(PIN_TRI_DEPTH + PIN_LINE_LENGTH, 0.0)
+        return QPointF(PIN_STUB_OUTER_REACH, 0.0)
 
     def paint(
         self,
@@ -495,14 +525,13 @@ class _OutputPinItem(QGraphicsObject):
         painter.setBrush(QColor(255, 255, 255))
         painter.setPen(pen)
         painter.drawPolygon(tri)
-        total = PIN_LINE_LENGTH
-        painter.drawLine(QPointF(e, 0.0), QPointF(e + total, 0.0))
+        painter.drawLine(QPointF(e, 0.0), QPointF(PIN_STUB_OUTER_REACH, 0.0))
         if self._measure_ids:
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             # Arrow is centered just outside the pin's triangle tip.
             # Spitze endet direkt am Pin (y = 0); Schaft + Dreieck zeigen nach oben.
-            cx = e + total - MODULE * 0.12
+            cx = PIN_STUB_OUTER_REACH - MODULE * 0.12
             tip_y = 0.0
             base_y = -MODULE * 0.55
             half_w = MODULE * 0.4
@@ -564,13 +593,11 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self,
         variable: Variable,
         parent: QGraphicsRectItem | None = None,
-        *,
-        drop_shadow: bool = True,
     ) -> None:
         block_w = variable_diagram_block_width_scene(variable.name)
         super().__init__(0, 0, block_w, VARIABLE_HEIGHT, parent)
         self._variable = variable
-        self.setBrush(QColor(250, 250, 248))
+        self.setBrush(DIAGRAM_BLOCK_FILL)
         self.setPen(_block_outline_pen(QColor(55, 55, 55)))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -603,9 +630,6 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._value_label.setZValue(3.0)
         self._live_value_overlay = False
         self._value_label.setVisible(False)
-
-        if drop_shadow:
-            _apply_light_diagonal_shadow(self)
 
         cy = VARIABLE_HEIGHT / 2.0
         self._pin_in = _InputPinItem("in", self)
@@ -678,11 +702,12 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.isSelected():
             r = self.rect()
-            pad = MARK_BLOCK_PADDING
+            pad = DIAGRAM_SELECTION_OVERHANG_PX
             hr = r.adjusted(-pad, -pad, pad, pad)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(MARK_HIGHLIGHT_COLOR)
-            painter.drawRoundedRect(hr, MARK_VARIABLE_HIGHLIGHT_RADIUS, MARK_VARIABLE_HIGHLIGHT_RADIUS)
+            rr = DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX
+            painter.drawRoundedRect(hr, rr, rr)
         painter.restore()
         super().paint(painter, _style_option_without_item_selection(option), widget)
 
@@ -746,12 +771,10 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self,
         operator: BasicOperator,
         parent: QGraphicsRectItem | None = None,
-        *,
-        drop_shadow: bool = True,
     ) -> None:
         super().__init__(0, 0, OPERATOR_SIZE, OPERATOR_SIZE, parent)
         self._operator = operator
-        self.setBrush(QColor(245, 243, 238))
+        self.setBrush(DIAGRAM_BLOCK_FILL)
         self.setPen(_block_outline_pen(QColor(45, 45, 45)))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -772,9 +795,6 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self._pin_out = _OutputPinItem(self)
         self._pin_out.setPos(OPERATOR_SIZE, 1.5 * MODULE)
 
-        if drop_shadow:
-            _apply_light_diagonal_shadow(self)
-
     def controller_select_token(self) -> str:
         return self._operator.hash_name
 
@@ -788,11 +808,12 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.isSelected():
             r = self.rect()
-            pad = MARK_BLOCK_PADDING
+            pad = DIAGRAM_SELECTION_OVERHANG_PX
             hr = r.adjusted(-pad, -pad, pad, pad)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(MARK_HIGHLIGHT_COLOR)
-            painter.drawRoundedRect(hr, MARK_OPERATOR_HIGHLIGHT_RADIUS, MARK_OPERATOR_HIGHLIGHT_RADIUS)
+            rr = DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX
+            painter.drawRoundedRect(hr, rr, rr)
         painter.restore()
         super().paint(painter, _style_option_without_item_selection(option), widget)
 
@@ -818,7 +839,23 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         return self.mapToScene(r.center())
 
 
-FMU_PIN_ROW = MODULE * 1.12
+# Vertical pitch for FMU / multi-pin lib pin rows; keep in sync with synarius_core ``diagram_geometry._ELEMENTARY_LIB_PIN_ROW``.
+ELEMENTARY_LIB_PIN_ROW = MODULE * 1.52
+# Multi-pin elementary library blocks (FMU, future types): header layout — sync with ``diagram_geometry`` _ELEMENTARY_LIB_* .
+ELEMENTARY_LIB_HEADER_TITLE_SUB_GAP = MODULE * 0.1
+ELEMENTARY_LIB_HEADER_GRAPHIC_GAP = MODULE * 0.12
+ELEMENTARY_LIB_HEADER_GROUP_VPAD = MODULE * 0.24
+
+
+class _ElementaryLibHeaderGraphicSlot(QGraphicsRectItem):
+    """Reserved area for an optional header icon below the title (any multi-pin elementary lib block)."""
+
+    def __init__(self, size: float, parent: QGraphicsItem | None = None) -> None:
+        super().__init__(0.0, 0.0, size, size, parent)
+        self.setPen(QPen(Qt.PenStyle.NoPen))
+        self.setBrush(Qt.BrushStyle.NoBrush)
+        self.setZValue(1.5)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
 
 def _distributed_ys(n: int, y0: float, y1: float) -> list[float]:
@@ -829,94 +866,243 @@ def _distributed_ys(n: int, y0: float, y1: float) -> list[float]:
     return [y0 + (y1 - y0) * i / (n - 1) for i in range(n)]
 
 
+class _FmuBlockGeometry(NamedTuple):
+    title: str
+    sub: str
+    font: QFont
+    fm: QFontMetricsF
+    sub_font: QFont | None
+    block_w: float
+    block_h: float
+    header_h: float
+    pin_area_h: float
+    stack_h: float
+    text_stack_h: float
+    nudge: float
+    lx: float
+    ly: float
+    gh: float
+
+
+_FMU_PIN_LABEL_EDGE_INSET = MODULE * 0.32
+_FMU_PIN_LABEL_CENTER_GAP = MODULE * 1.2
+_FMU_PIN_LABEL_MIN_SIDE_WIDTH = MODULE * 1.5
+_FMU_PIN_LABEL_COLOR = QColor(76, 64, 46)
+
+
 class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
-    """FMU elementary: dynamic input/output pins from the model ``pin`` map."""
+    """Multi-pin elementary library block (e.g. FMU): dynamic I/O from the model ``pin`` map."""
 
     def __init__(
         self,
         elementary: ElementaryInstance,
         parent: QGraphicsRectItem | None = None,
-        *,
-        drop_shadow: bool = True,
     ) -> None:
+        ins, outs, n_in, n_out, pin_rows = self.__init_sorted_pins(elementary)
+        geo = self.__init_block_geometry(elementary, pin_rows, ins, outs)
+        super().__init__(0, 0, geo.block_w, geo.block_h, parent)
+        self._el = elementary
+        self._pins: dict[str, _InputPinItem | _OutputPinItem] = {}
+        self._pin_labels: dict[str, QGraphicsSimpleTextItem] = {}
+        self._header_graphic: _ElementaryLibHeaderGraphicSlot | None = None
+        self.__init_frame_appearance()
+        self.__init_header_labels(geo)
+        self.__init_pin_widgets(ins, outs, n_in, n_out, geo)
+
+    @staticmethod
+    def __init_sorted_pins(
+        elementary: ElementaryInstance,
+    ) -> tuple[list[Pin], list[Pin], int, int, int]:
         ins = sorted(elementary.in_pins, key=lambda p: p.name)
         outs = sorted(elementary.out_pins, key=lambda p: p.name)
         n_in, n_out = len(ins), len(outs)
         pin_rows = max(n_in, n_out, 1)
+        return ins, outs, n_in, n_out, pin_rows
 
+    @staticmethod
+    def __init_block_geometry(
+        elementary: ElementaryInstance,
+        pin_rows: int,
+        ins: list[Pin],
+        outs: list[Pin],
+    ) -> _FmuBlockGeometry:
         title = elementary.name
-        sub = ""
-        try:
-            mid = elementary.get("fmu.model_identifier")
-            if isinstance(mid, str) and mid.strip():
-                sub = mid.strip()[:28]
-        except (KeyError, TypeError, ValueError):
-            pass
+        sub = elementary_diagram_subtitle_for_geometry(elementary)
 
         font = _font_for_variable_name(title, 999, VARIABLE_HEIGHT)
         fm = QFontMetricsF(font)
         tw = fm.horizontalAdvance(title)
+        sub_font: QFont | None = None
         if sub:
-            f2 = QFont()
-            f2.setPixelSize(max(7, int(MODULE * 0.78)))
-            fm2 = QFontMetricsF(f2)
-            tw = max(tw, fm2.horizontalAdvance(sub))
-        inner_w = max(4.8 * MODULE, tw + MODULE * 1.4)
+            sub_font = QFont()
+            sub_font.setPixelSize(max(7, int(MODULE * 0.78)))
+            tw = max(tw, QFontMetricsF(sub_font).horizontalAdvance(sub))
+        pin_font = FmuBlockItem.__pin_label_font()
+        pin_fm = QFontMetricsF(pin_font)
+        max_in_w = max((pin_fm.horizontalAdvance(p.name) for p in ins), default=0.0)
+        max_out_w = max((pin_fm.horizontalAdvance(p.name) for p in outs), default=0.0)
+        pin_text_w = (
+            2.0 * _FMU_PIN_LABEL_EDGE_INSET
+            + _FMU_PIN_LABEL_CENTER_GAP
+            + max_in_w
+            + max_out_w
+        )
+        inner_w = max(4.8 * MODULE, tw + MODULE * 1.4, pin_text_w)
+        min_bw = inner_w + MODULE * 2.4
+        step = MODULE * 0.5
+        block_w = max(min_bw, math.ceil(min_bw / step) * step)
 
-        top_band = MODULE * 1.38
-        pin_area_h = max(FMU_PIN_ROW, pin_rows * FMU_PIN_ROW)
-        block_h = top_band + pin_area_h + MODULE * 0.55
-        block_w = inner_w + MODULE * 2.4
+        gh = float(ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE)
+        probe_title = QGraphicsSimpleTextItem(title)
+        probe_title.setFont(font)
+        title_br0 = probe_title.boundingRect()
+        text_stack_h = title_br0.height()
+        if sub and sub_font is not None:
+            probe_sub = QGraphicsSimpleTextItem(sub)
+            probe_sub.setFont(sub_font)
+            text_stack_h += ELEMENTARY_LIB_HEADER_TITLE_SUB_GAP + probe_sub.boundingRect().height()
+        stack_h = text_stack_h + ((ELEMENTARY_LIB_HEADER_GRAPHIC_GAP + gh) if gh > 0.0 else 0.0)
+        nudge = 0.45 * fm.descent()
+        header_h = max(
+            elementary_lib_header_height_scene(title, sub, gh),
+            2.0 * stack_h - title_br0.height() - 2.0 * nudge + 2.0,
+        )
 
-        super().__init__(0, 0, block_w, block_h, parent)
-        self._el = elementary
-        self._pins: dict[str, _InputPinItem | _OutputPinItem] = {}
+        pin_area_h = max(ELEMENTARY_LIB_PIN_ROW, pin_rows * ELEMENTARY_LIB_PIN_ROW)
+        block_h_raw = header_h + pin_area_h + MODULE * 0.55
+        block_h = max(block_h_raw, math.ceil(block_h_raw / step) * step)
 
-        self.setBrush(QColor(250, 246, 236))
+        y_group = max(0.0, (block_h - stack_h) / 2)
+        ly = max(0.0, y_group - nudge)
+        lx = (block_w - fm.horizontalAdvance(title)) / 2
+
+        return _FmuBlockGeometry(
+            title=title,
+            sub=sub,
+            font=font,
+            fm=fm,
+            sub_font=sub_font,
+            block_w=block_w,
+            block_h=block_h,
+            header_h=header_h,
+            pin_area_h=pin_area_h,
+            stack_h=stack_h,
+            text_stack_h=text_stack_h,
+            nudge=nudge,
+            lx=lx,
+            ly=ly,
+            gh=gh,
+        )
+
+    def __init_frame_appearance(self) -> None:
+        self.setBrush(DIAGRAM_BLOCK_FILL)
         self.setPen(_block_outline_pen(QColor(88, 70, 42)))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
 
-        self._label = QGraphicsSimpleTextItem(title, self)
+    def __init_header_labels(self, geo: _FmuBlockGeometry) -> None:
+        # Vertical center of title stack in the full block rect (cf. VariableBlockItem).
+        self._label = QGraphicsSimpleTextItem(geo.title, self)
         self._label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._label.setBrush(QColor(38, 32, 22))
-        self._label.setZValue(2.0)
-        self._label.setFont(font)
-        text_w = fm.horizontalAdvance(title)
-        lx = (block_w - text_w) / 2
-        ly = (top_band - fm.height()) / 2 + 0.2 * fm.ascent()
-        self._label.setPos(lx, ly)
+        self._label.setZValue(3.0)
+        self._label.setFont(geo.font)
+        self._label.setPos(geo.lx, geo.ly)
 
         self._sub_label: QGraphicsSimpleTextItem | None = None
-        if sub:
-            f2 = QFont()
-            f2.setPixelSize(max(7, int(MODULE * 0.78)))
-            self._sub_label = QGraphicsSimpleTextItem(sub, self)
+        if geo.sub and geo.sub_font is not None:
+            self._sub_label = QGraphicsSimpleTextItem(geo.sub, self)
             self._sub_label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             self._sub_label.setBrush(QColor(90, 80, 65))
-            self._sub_label.setFont(f2)
-            fm2 = QFontMetricsF(f2)
-            sw = fm2.horizontalAdvance(sub)
-            self._sub_label.setPos((block_w - sw) / 2, ly + fm.height() * 0.72)
+            self._sub_label.setFont(geo.sub_font)
+            self._sub_label.setZValue(3.0)
+            sw = QFontMetricsF(geo.sub_font).horizontalAdvance(geo.sub)
+            title_br = self._label.boundingRect()
+            self._sub_label.setPos(
+                (geo.block_w - sw) / 2,
+                geo.ly + title_br.height() + ELEMENTARY_LIB_HEADER_TITLE_SUB_GAP,
+            )
 
-        if drop_shadow:
-            _apply_light_diagonal_shadow(self)
+        if geo.gh > 0.0:
+            self._header_graphic = _ElementaryLibHeaderGraphicSlot(geo.gh, self)
+            self._header_graphic.setZValue(3.0)
+            gx = (geo.block_w - geo.gh) / 2
+            gy = geo.ly + geo.text_stack_h + ELEMENTARY_LIB_HEADER_GRAPHIC_GAP
+            self._header_graphic.setPos(gx, gy)
 
-        y0 = top_band + FMU_PIN_ROW * 0.35
-        y1 = top_band + pin_area_h - FMU_PIN_ROW * 0.35
-        ys_in = _distributed_ys(n_in, y0, y1)
-        ys_out = _distributed_ys(n_out, y0, y1)
+    @staticmethod
+    def __pin_label_font() -> QFont:
+        f = QFont()
+        f.setWeight(QFont.Weight.Medium)
+        # Between the old tiny labels and the oversized bump; still readable on canvas.
+        f.setPixelSize(max(10, int(MODULE * 1.15)))
+        return f
+
+    @staticmethod
+    def __elide_label(text: str, fm: QFontMetricsF, max_width: float) -> str:
+        t = text.strip()
+        if t == "" or max_width <= 2.0:
+            return ""
+        if fm.horizontalAdvance(t) <= max_width:
+            return t
+        dots = "..."
+        dots_w = fm.horizontalAdvance(dots)
+        if dots_w >= max_width:
+            return dots
+        while t and fm.horizontalAdvance(t + dots) > max_width:
+            t = t[:-1]
+        return (t + dots) if t else dots
+
+    def __init_pin_widgets(
+        self,
+        ins: list[Pin],
+        outs: list[Pin],
+        n_in: int,
+        n_out: int,
+        geo: _FmuBlockGeometry,
+    ) -> None:
+        y0 = geo.header_h + ELEMENTARY_LIB_PIN_ROW * 0.35
+        y1 = geo.header_h + geo.pin_area_h - ELEMENTARY_LIB_PIN_ROW * 0.35
+        ys_in = [_snap_scalar_half_module(y) for y in _distributed_ys(n_in, y0, y1)]
+        ys_out = [_snap_scalar_half_module(y) for y in _distributed_ys(n_out, y0, y1)]
+        pin_font = self.__pin_label_font()
+        pin_fm = QFontMetricsF(pin_font)
+        side_w = max(
+            _FMU_PIN_LABEL_MIN_SIDE_WIDTH,
+            (geo.block_w - 2.0 * _FMU_PIN_LABEL_EDGE_INSET - _FMU_PIN_LABEL_CENTER_GAP) / 2.0,
+        )
+        left_x = _FMU_PIN_LABEL_EDGE_INSET
+        right_anchor_x = geo.block_w - _FMU_PIN_LABEL_EDGE_INSET
 
         for p, py in zip(ins, ys_in):
             pin_it = _InputPinItem(p.name, self)
             pin_it.setPos(0.0, py)
             self._pins[p.name] = pin_it
+            txt = self.__elide_label(p.name, pin_fm, side_w)
+            lbl = QGraphicsSimpleTextItem(txt, self)
+            lbl.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            lbl.setBrush(_FMU_PIN_LABEL_COLOR)
+            lbl.setFont(pin_font)
+            lbl.setZValue(2.8)
+            lh = lbl.boundingRect().height()
+            lbl.setPos(left_x, py - lh / 2.0)
+            self._pin_labels[p.name] = lbl
         for p, py in zip(outs, ys_out):
             pin_it = _OutputPinItem(self, logical_name=p.name)
-            pin_it.setPos(block_w, py)
+            pin_it.setPos(geo.block_w, py)
             self._pins[p.name] = pin_it
+            txt = self.__elide_label(p.name, pin_fm, side_w)
+            lbl = QGraphicsSimpleTextItem(txt, self)
+            lbl.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            lbl.setBrush(_FMU_PIN_LABEL_COLOR)
+            lbl.setFont(pin_font)
+            lbl.setZValue(2.8)
+            tw = pin_fm.horizontalAdvance(txt)
+            lh = lbl.boundingRect().height()
+            lbl.setPos(right_anchor_x - tw, py - lh / 2.0)
+            self._pin_labels[p.name] = lbl
 
     def elementary(self) -> ElementaryInstance:
         return self._el
@@ -940,11 +1126,12 @@ class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.isSelected():
             r = self.rect()
-            pad = MARK_BLOCK_PADDING
+            pad = DIAGRAM_SELECTION_OVERHANG_PX
             hr = r.adjusted(-pad, -pad, pad, pad)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(MARK_HIGHLIGHT_COLOR)
-            painter.drawRoundedRect(hr, MARK_VARIABLE_HIGHLIGHT_RADIUS, MARK_VARIABLE_HIGHLIGHT_RADIUS)
+            rr = DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX
+            painter.drawRoundedRect(hr, rr, rr)
         painter.restore()
         super().paint(painter, _style_option_without_item_selection(option), widget)
 
@@ -966,8 +1153,6 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self,
         dataviewer: DataViewer,
         parent: QGraphicsRectItem | None = None,
-        *,
-        drop_shadow: bool = True,
     ) -> None:
         super().__init__(0, 0, self.DV_W, self.DV_H, parent)
         self._dataviewer = dataviewer
@@ -980,9 +1165,6 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self.setVisible(False)
 
         self._vid_str = str(int(dataviewer.get("dataviewer_id")))
-
-        if drop_shadow:
-            _apply_light_diagonal_shadow(self)
 
     def dataviewer(self) -> DataViewer:
         return self._dataviewer
@@ -999,6 +1181,7 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
 
                 if isinstance(scene, SynariusDiagramScene):
                     scene.open_dataviewer_requested.emit(self._dataviewer)
+                    scene.suppress_next_left_release_selection_sync()
                     event.accept()
                     return
             except Exception:
@@ -1025,17 +1208,18 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = self.rect()
-        if self.isSelected():
-            pad = MARK_BLOCK_PADDING * 0.85
-            hr = r.adjusted(-pad, -pad, pad, pad)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(MARK_HIGHLIGHT_COLOR)
-            painter.drawRoundedRect(hr, MARK_OPERATOR_HIGHLIGHT_RADIUS * 1.1, MARK_OPERATOR_HIGHLIGHT_RADIUS * 1.1)
-
         # Äußerer Block: wie Variable/Operator – weißer Block mit dunklem, relativ dickem Rand.
         outer_inset = MODULE * 0.25
         outer = r.adjusted(outer_inset, outer_inset, -outer_inset, -outer_inset)
-        painter.setBrush(QColor(250, 250, 248))
+        if self.isSelected():
+            pad = DIAGRAM_SELECTION_OVERHANG_PX
+            hr = outer.adjusted(-pad, -pad, pad, pad)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(MARK_HIGHLIGHT_COLOR)
+            rr = DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX
+            painter.drawRoundedRect(hr, rr, rr)
+
+        painter.setBrush(DIAGRAM_BLOCK_FILL)
         painter.setPen(_block_outline_pen(QColor(55, 55, 55)))
         radius = MODULE * 0.4
         painter.drawRoundedRect(outer, radius, radius)
@@ -1053,7 +1237,7 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         )
         thin_pen = QPen(QColor(80, 80, 80), CONNECTOR_LINE_WIDTH)
         painter.setPen(thin_pen)
-        painter.setBrush(QColor(255, 255, 255))
+        painter.setBrush(DIAGRAM_BLOCK_FILL)
         painter.drawRoundedRect(screen, MODULE * 0.22, MODULE * 0.22)
 
         # DataViewer-Nummer mittig im Bildschirm.
@@ -1299,10 +1483,12 @@ class ConnectorEdgeItem(QGraphicsObject):
         tx, ty = p2.x(), p2.y()
         if self._bend_drag_local is not None:
             tpl = polyline_for_endpoints(sx, sy, tx, ty, self._bend_drag_local)
+            tpl = _orthogonal_stroke_polyline(tpl)
             pts = [QPointF(x, y) for x, y in tpl]
             self._stroke_path = _rounded_orthogonal_chain(pts, radius=14.0)
         elif c is not None and c._orthogonal_bends:
             tpl = c.polyline_xy((sx, sy), (tx, ty))
+            tpl = _orthogonal_stroke_polyline(tpl)
             pts = [QPointF(x, y) for x, y in tpl]
             self._stroke_path = _rounded_orthogonal_chain(pts, radius=14.0)
         else:
@@ -1435,6 +1621,10 @@ class ConnectorEdgeItem(QGraphicsObject):
             final_bends = list(self._bend_drag_local) if self._bend_drag_local is not None else None
             c = self._connector
             sx, sy = self._p1.x(), self._p1.y()
+            bend_i, axis, press_pt, start_val, _sx0, _sy0, _tx0, _ty0 = self._bend_drag
+            release_dx = float(event.scenePos().x() - press_pt.x())
+            release_dy = float(event.scenePos().y() - press_pt.y())
+            moved = abs(release_dx) > 0.5 or abs(release_dy) > 0.5
             self.ungrabMouse()
             self._bend_drag = None
             self._bend_drag_local = None
@@ -1446,6 +1636,8 @@ class ConnectorEdgeItem(QGraphicsObject):
             if (
                 rel_final is not None
                 and c is not None
+                and final_bends is not None
+                and moved
                 and not _bends_list_equal(rel_final, list(c._orthogonal_bends))
             ):
                 self._apply_bends_list(final_bends)
@@ -1460,13 +1652,13 @@ class ConnectorEdgeItem(QGraphicsObject):
 
     def shape(self) -> QPainterPath:
         stroker = QPainterPathStroker()
-        stroker.setWidth(CONNECTOR_LINE_WIDTH + 2.0 * MARK_BLOCK_PADDING + _MARK_CONNECTOR_HIT_SLACK)
+        stroker.setWidth(CONNECTOR_LINE_WIDTH + 2.0 * DIAGRAM_SELECTION_OVERHANG_PX + _MARK_CONNECTOR_HIT_SLACK)
         stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
         stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         return stroker.createStroke(self._stroke_path)
 
     def boundingRect(self) -> QRectF:
-        half_halo = 0.5 * (CONNECTOR_LINE_WIDTH + 2.0 * MARK_BLOCK_PADDING)
+        half_halo = 0.5 * (CONNECTOR_LINE_WIDTH + 2.0 * DIAGRAM_SELECTION_OVERHANG_PX)
         margin = max(6.0, half_halo + 1.0)
         br = self._stroke_path.boundingRect()
         br = br.united(QRectF(self._p1, self._p1))
@@ -1483,7 +1675,7 @@ class ConnectorEdgeItem(QGraphicsObject):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.isSelected():
             # Halo width: black stroke + same outward pad as variable/operator rects.
-            halo_w = CONNECTOR_LINE_WIDTH + 2.0 * MARK_BLOCK_PADDING
+            halo_w = CONNECTOR_LINE_WIDTH + 2.0 * DIAGRAM_SELECTION_OVERHANG_PX
             halo = QPen(MARK_HIGHLIGHT_COLOR, halo_w)
             halo.setCapStyle(Qt.PenCapStyle.RoundCap)
             halo.setJoinStyle(Qt.PenJoinStyle.RoundJoin)

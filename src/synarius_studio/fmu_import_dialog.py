@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 
@@ -24,6 +25,18 @@ from PySide6.QtWidgets import (
 
 from synarius_core.fmu.bind import scalar_variables_to_fmu_ports
 from synarius_core.fmu.inspection import FmuInspectError, inspect_fmu_path
+
+
+def _default_instance_name_from_path(path: Path) -> str:
+    base = path.stem.strip()
+    candidate = re.sub(r"\W+", "_", base)
+    if not candidate:
+        candidate = "fmu_block_1"
+    if candidate[0].isdigit():
+        candidate = f"fmu_{candidate}"
+    if not candidate.isidentifier():
+        candidate = "fmu_block_1"
+    return candidate
 
 
 def build_fmu_import_command(
@@ -106,6 +119,9 @@ class FmuImportDialog(QDialog):
         p = Path(path_str)
         self._path_edit.setText(str(p))
         self._path = p
+        if not self._name_edit.text().strip():
+            auto_name = _default_instance_name_from_path(p)
+            self._name_edit.setText(auto_name)
         try:
             data = inspect_fmu_path(p)
         except FmuInspectError as exc:
@@ -147,6 +163,9 @@ class FmuImportDialog(QDialog):
         if self._path is None or not self._path.is_file():
             raise ValueError("Keine gültige FMU-Datei.")
         name = self._name_edit.text().strip()
+        if not name and self._path is not None:
+            name = _default_instance_name_from_path(self._path)
+            self._name_edit.setText(name)
         if not name:
             raise ValueError("Instanzname fehlt.")
         if not name.isidentifier():

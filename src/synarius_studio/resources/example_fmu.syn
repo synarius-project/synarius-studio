@@ -1,0 +1,17 @@
+# Fully instrumented BouncingBall FMU example (FMI 2.0).
+# The FMU is bundled in ``resources/third_party/bouncing_ball/BouncingBall.fmu``.
+
+new FmuInstance bb 187.5 82.5 1 fmu_path=third_party/bouncing_ball/BouncingBall.fmu fmu_ports='[{"name":"h","value_reference":1,"causality":"output","variability":"continuous","data_type":"float"},{"name":"v","value_reference":3,"causality":"output","variability":"continuous","data_type":"float"},{"name":"g","value_reference":5,"causality":"parameter","variability":"fixed","data_type":"float"},{"name":"e","value_reference":6,"causality":"parameter","variability":"tunable","data_type":"float"}]' fmu_variables='[{"name":"time","value_reference":0,"causality":"independent","variability":"continuous","data_type":"float"},{"name":"h","value_reference":1,"causality":"output","variability":"continuous","data_type":"float"},{"name":"der(h)","value_reference":2,"causality":"local","variability":"continuous","data_type":"float"},{"name":"v","value_reference":3,"causality":"output","variability":"continuous","data_type":"float"},{"name":"der(v)","value_reference":4,"causality":"local","variability":"continuous","data_type":"float"},{"name":"g","value_reference":5,"causality":"parameter","variability":"fixed","data_type":"float"},{"name":"e","value_reference":6,"causality":"parameter","variability":"tunable","data_type":"float"},{"name":"v_min","value_reference":7,"causality":"local","variability":"constant","data_type":"float"}]'
+
+# Output carrier variables (to visualize key FMU outputs in the diagram + DataViewer).
+new Variable bb_h 397.5 52.5 1
+new Variable bb_v 397.5 127.5 1
+
+new Connector bb bb_h source_pin=h target_pin=in
+new Connector bb bb_v source_pin=v target_pin=in
+
+new DataViewer 637.5 210
+set bb_h.dataviewer_measure_ids [1]
+set bb_v.dataviewer_measure_ids [1]
+set @main.last_selected_dataviewer_id 1
+set @main.simulation_mode true

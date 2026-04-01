@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -26,6 +26,7 @@ from ..theme import SELECTION_HIGHLIGHT_TEXT, selection_highlight_qcolor
 
 from .connector_interactive import ConnectorRouteTool
 from .dataflow_items import DataViewerBlockItem, FmuBlockItem, OperatorBlockItem, VariableBlockItem
+from .diagram_scene import SynariusDiagramScene
 from .placement_interactive import (
     LIBRARY_ELEMENT_DRAG_MIME,
     SIGNAL_NAME_DRAG_MIME,
@@ -36,7 +37,7 @@ from .placement_interactive import (
 )
 
 # Light yellow canvas (frame + scene); single source of truth for diagram area color.
-CANVAS_BACKGROUND_COLOR = "#fffef2"
+CANVAS_BACKGROUND_COLOR = "#f0f3f5" #"#fffef2"
 # Simulation canvas background — #ecffec (light green), QColor(236, 255, 236).
 CANVAS_SIMULATION_BACKGROUND_COLOR = "#ecffec"
 
@@ -162,6 +163,9 @@ class DataflowGraphicsView(QGraphicsView):
         self._controller_for_placement: MinimalController | None = None
         self._eat_next_left_release_for_route = False
         self._interaction_locked = False
+        self._deferred_scene_left_release_timer = QTimer(self)
+        self._deferred_scene_left_release_timer.setSingleShot(True)
+        self._deferred_scene_left_release_timer.timeout.connect(self._fire_deferred_scene_left_release)
 
     def set_viewport_canvas_color(self, hex_color: str) -> None:
         """Match scene and parent chrome: QGraphicsView draws this behind / around the scene."""
@@ -223,8 +227,38 @@ class DataflowGraphicsView(QGraphicsView):
             it = it.parentItem()
         return None
 
+    def _cancel_deferred_scene_left_release(self) -> None:
+        if self._deferred_scene_left_release_timer.isActive():
+            self._deferred_scene_left_release_timer.stop()
+
+    def _should_defer_left_release_for_dataviewer(self, event: QMouseEvent) -> bool:
+        if event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            return False
+        if not self.rubberBandRect().isNull():
+            return False
+        vp_pos = event.position().toPoint()
+        return self._dataviewer_block_under(self, vp_pos) is not None
+
+    def _schedule_deferred_scene_left_release(self) -> None:
+        self._deferred_scene_left_release_timer.stop()
+        ms = QGuiApplication.styleHints().mouseDoubleClickInterval()
+        self._deferred_scene_left_release_timer.start(ms)
+
+    def _fire_deferred_scene_left_release(self) -> None:
+        self._emit_scene_left_release_maybe_skip_selection_sync()
+        self._emit_block_move_finished_if_uniform()
+
+    def _post_left_release_selection_and_block_move(self, event: QMouseEvent) -> None:
+        if self._should_defer_left_release_for_dataviewer(event):
+            self._schedule_deferred_scene_left_release()
+            return
+        self._emit_scene_left_release_maybe_skip_selection_sync()
+        self._emit_block_move_finished_if_uniform()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._cancel_deferred_scene_left_release()
         if self._interaction_locked:
             dv = self._dataviewer_block_under(self, pos)
             if event.button() == Qt.MouseButton.LeftButton and dv is not None:
@@ -321,6 +355,13 @@ class DataflowGraphicsView(QGraphicsView):
         else:
             self._cursor_hint_empty_canvas(vp_pos)
 
+    def _emit_scene_left_release_maybe_skip_selection_sync(self) -> None:
+        """Emit ``scene_left_release`` unless a handled item double-click requested a one-time skip (avoids duplicate ``select``)."""
+        sc = self.scene()
+        if isinstance(sc, SynariusDiagramScene) and sc.take_suppress_next_left_release_selection_sync():
+            return
+        self.scene_left_release.emit()
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._pan_active:
             self._pan_active = False
@@ -344,18 +385,17 @@ class DataflowGraphicsView(QGraphicsView):
             if self._route_tool.active():
                 self._route_tool.on_left_release(scene_pos, top)
                 event.accept()
-                self.scene_left_release.emit()
+                self._emit_scene_left_release_maybe_skip_selection_sync()
                 self._emit_block_move_finished_if_uniform()
                 return
             if self._route_tool.try_start_from_release(scene_pos, top):
                 event.accept()
-                self.scene_left_release.emit()
+                self._emit_scene_left_release_maybe_skip_selection_sync()
                 self._emit_block_move_finished_if_uniform()
                 return
         super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
-            self.scene_left_release.emit()
-            self._emit_block_move_finished_if_uniform()
+            self._post_left_release_selection_and_block_move(event)
 
     def _emit_block_move_finished_if_uniform(self) -> None:
         snap = self._move_anchor_snapshot

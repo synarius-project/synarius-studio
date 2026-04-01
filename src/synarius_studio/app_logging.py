@@ -13,6 +13,7 @@ from .log_emitter import LogEmitter
 _main_log_path: Path | None = None
 _file_configured = False
 _gui_handler_attached = False
+_split_gui_handler_attached = False
 _prev_excepthook = None
 
 
@@ -104,7 +105,7 @@ def _install_excepthook() -> None:
 
 
 def attach_gui_log_handler(emitter: LogEmitter, *, level: int | None = None) -> None:
-    """Append log records to the GUI via ``LogEmitter.message`` (thread-safe via Qt queued slots)."""
+    """Append all log records to a single GUI sink (legacy; prefer ``attach_split_studio_gui_log_handlers``)."""
     global _gui_handler_attached
     if _gui_handler_attached:
         return
@@ -120,6 +121,32 @@ def attach_gui_log_handler(emitter: LogEmitter, *, level: int | None = None) -> 
         logging.Formatter("%(asctime)s %(levelname)-5s %(name)s | %(message)s", datefmt="%H:%M:%S")
     )
     root.addHandler(h)
+    _gui_handler_attached = True
+
+
+def attach_split_studio_gui_log_handlers(
+    general: LogEmitter,
+    build: LogEmitter,
+    experiment: LogEmitter,
+    *,
+    level: int | None = None,
+) -> None:
+    """Route logging to general (all), build (compile / command errors), and experiment panes."""
+    global _split_gui_handler_attached, _gui_handler_attached
+    if _split_gui_handler_attached:
+        return
+    from .qt_log_handler import SplitStudioGuiLogHandler
+
+    root = logging.getLogger()
+    lv = level if level is not None else (
+        logging.DEBUG if os.environ.get("SYNARIUS_STUDIO_LOG_DEBUG") else logging.INFO
+    )
+    h = SplitStudioGuiLogHandler(general, build, experiment, level=lv)
+    h.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-5s %(name)s | %(message)s", datefmt="%H:%M:%S")
+    )
+    root.addHandler(h)
+    _split_gui_handler_attached = True
     _gui_handler_attached = True
 
 

@@ -1,7 +1,9 @@
-"""Layout and populate a scene from a synarius-core ``Model`` (e.g. loaded from ``test.syn``)."""
+"""Layout and populate a scene from a synarius-core ``Model`` (e.g. loaded from bundled examples)."""
 
 from __future__ import annotations
 
+import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,23 +31,77 @@ if TYPE_CHECKING:
 SCENE_RECT = QRectF(0.0, 0.0, 900.0 * UI_SCALE, 520.0 * UI_SCALE)
 
 
+def _agent_debug_log(*, run_id: str, hypothesis_id: str, message: str, data: dict[str, object]) -> None:
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "743d05",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": "dataflow_layout.py:open_syn_dialog_start_dir",
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        log_path = Path(__file__).resolve().parents[3] / "debug-743d05.log"
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # endregion
+
+
 def default_sample_syn_path() -> Path:
-    """Path to bundled ``resources/test.syn`` next to the ``synarius_studio`` package."""
-    return Path(__file__).resolve().parent.parent / "resources" / "test.syn"
+    """Path to bundled ``resources/example_modelling.syn`` next to the ``synarius_studio`` package."""
+    return Path(__file__).resolve().parent.parent / "resources" / "example_modelling.syn"
 
 
 def open_syn_dialog_start_dir() -> Path:
     """
     Initial directory for *Open* / *Save* on ``.syn`` files.
 
-    When frozen (PyInstaller / MSI install), sample ``test.syn`` sits next to ``sys.executable``.
+    When frozen (PyInstaller / MSI install), bundled example ``.syn`` files sit next to ``sys.executable``.
     In development, default to the package ``resources`` folder.
     """
     import sys
 
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return default_sample_syn_path().parent
+        exe_dir = Path(sys.executable).resolve().parent
+        # Prefer locations that actually contain bundled .syn examples.
+        candidates: list[tuple[str, Path]] = [("exe_dir", exe_dir)]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(("meipass_resources", Path(meipass) / "synarius_studio" / "resources"))
+        selected_source = "exe_dir_fallback"
+        start_dir = exe_dir
+        for source, candidate in candidates:
+            try:
+                if candidate.is_dir() and any(candidate.glob("*.syn")):
+                    start_dir = candidate
+                    selected_source = source
+                    break
+            except Exception:
+                continue
+    else:
+        start_dir = default_sample_syn_path().parent
+        selected_source = "dev_resources"
+    try:
+        syn_files = sorted(p.name for p in start_dir.glob("*.syn"))
+    except Exception:
+        syn_files = []
+    _agent_debug_log(
+        run_id="pre-fix",
+        hypothesis_id="H_OPEN_DIR",
+        message="open_syn_dialog_start_dir",
+        data={
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "sys_executable": str(getattr(sys, "executable", "")),
+            "resolved_start_dir": str(start_dir),
+            "selected_source": selected_source,
+            "syn_files": syn_files,
+        },
+    )
+    return start_dir
 
 
 def populate_scene_from_model(

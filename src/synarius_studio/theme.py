@@ -69,6 +69,12 @@ def selection_highlight_qcolor(*, opaque: bool = False) -> QColor:
     return c
 
 
+# Diagram canvas (scene coordinates, px): uniform selection halo for Variable/Operator/FMU/DataViewer
+# blocks and connector edges. (Blocks intentionally use no QGraphicsDropShadowEffect so pins stay shadow-free.)
+DIAGRAM_SELECTION_OVERHANG_PX = 2.0
+DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX = 3.0
+
+
 def studio_tooltip_stylesheet() -> str:
     """Central tooltip style used by all Studio toolbars."""
     return (

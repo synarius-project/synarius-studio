@@ -88,7 +88,7 @@ def _make_preview_noninteractive(root: QGraphicsItem) -> None:
 def _make_preview_block(mode: str) -> VariableBlockItem | OperatorBlockItem:
     if mode == "var":
         v = Variable(name="v", type_key="Variable", obj_id=uuid4())
-        it: VariableBlockItem | OperatorBlockItem = VariableBlockItem(v, drop_shadow=False)
+        it: VariableBlockItem | OperatorBlockItem = VariableBlockItem(v)
     else:
         op_t = _OP_MODE_TO_TYPE[mode]
         o = BasicOperator(
@@ -97,7 +97,7 @@ def _make_preview_block(mode: str) -> VariableBlockItem | OperatorBlockItem:
             operation=op_t,
             obj_id=uuid4(),
         )
-        it = OperatorBlockItem(o, drop_shadow=False)
+        it = OperatorBlockItem(o)
     it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
     it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
     # Moving the ghost must not run connector notifications over the whole scene (stability + perf).
