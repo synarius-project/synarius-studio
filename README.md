@@ -4,6 +4,8 @@
 
 Graphical simulation tool with a PySide6 GUI for Synarius.
 
+![Synarius Studio — diagram canvas, library, and console](docs/images/SynariusStudio.png)
+
 ## Try out!
 Download latest Windows installer (MSI): https://github.com/synarius-project/synarius-studio/releases/latest
 
