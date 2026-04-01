@@ -75,8 +75,12 @@ jobs:
               <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
               <Feature Id="MainFeature" Title="synarius-studio" Level="1">
                 <ComponentRef Id="MainExeComponent" />
-                <ComponentRef Id="BundledExamplesComponent" />
-                <ComponentRef Id="BundledBouncingBallComponent" />
+                <ComponentRef Id="BundledExampleModellingComponent" />
+                <ComponentRef Id="BundledExampleExperimentComponent" />
+                <ComponentRef Id="BundledExampleFmuComponent" />
+                <ComponentRef Id="BundledBouncingBallFmuComponent" />
+                <ComponentRef Id="BundledBouncingBallLicenseComponent" />
+                <ComponentRef Id="BundledBouncingBallNoticesComponent" />
                 <ComponentRef Id="StartMenuShortcutComponent" />
               </Feature>
               <UIRef Id="WixUI_InstallDir" />
@@ -99,16 +103,24 @@ jobs:
                     <Component Id="MainExeComponent" Guid="*">
                       <File Id="MainExeFile" Source="dist\synarius-studio.exe" KeyPath="yes" />
                     </Component>
-                    <Component Id="BundledExamplesComponent" Guid="*">
+                    <Component Id="BundledExampleModellingComponent" Guid="*">
                       <File Id="BundledExampleModellingSyn" Source="src\synarius_studio\resources\example_modelling.syn" KeyPath="yes" />
+                    </Component>
+                    <Component Id="BundledExampleExperimentComponent" Guid="*">
                       <File Id="BundledExampleExperimentSyn" Source="src\synarius_studio\resources\example_experiment.syn" />
+                    </Component>
+                    <Component Id="BundledExampleFmuComponent" Guid="*">
                       <File Id="BundledExampleFmuSyn" Source="src\synarius_studio\resources\example_fmu.syn" />
                     </Component>
                     <Directory Id="ThirdPartyDir" Name="third_party">
                       <Directory Id="BouncingBallDir" Name="bouncing_ball">
-                        <Component Id="BundledBouncingBallComponent" Guid="*">
+                        <Component Id="BundledBouncingBallFmuComponent" Guid="*">
                           <File Id="BundledBouncingBallFmu" Source="src\synarius_studio\resources\third_party\bouncing_ball\BouncingBall.fmu" KeyPath="yes" />
+                        </Component>
+                        <Component Id="BundledBouncingBallLicenseComponent" Guid="*">
                           <File Id="BundledBouncingBallLicense" Source="src\synarius_studio\resources\third_party\bouncing_ball\LICENSE_BouncingBall.txt" />
+                        </Component>
+                        <Component Id="BundledBouncingBallNoticesComponent" Guid="*">
                           <File Id="BundledBouncingBallNotices" Source="src\synarius_studio\resources\third_party\bouncing_ball\THIRD_PARTY_NOTICES.md" />
                         </Component>
                       </Directory>
