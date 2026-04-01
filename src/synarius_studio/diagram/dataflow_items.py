@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
+import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import NamedTuple
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -39,7 +42,6 @@ from synarius_core.model import (
     ElementaryInstance,
     Pin,
     Variable,
-    elementary_diagram_subtitle_for_geometry,
 )
 from synarius_core.model.diagram_geometry import (
     ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE,
@@ -60,6 +62,67 @@ from ..theme import (
     DIAGRAM_SELECTION_OVERHANG_PX,
     selection_highlight_qcolor,
 )
+
+
+def _agent_debug_log(*, run_id: str, hypothesis_id: str, message: str, data: dict[str, object]) -> None:
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "743d05",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": "dataflow_items.py:subtitle_import",
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        log_path = Path(__file__).resolve().parents[3] / "debug-743d05.log"
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # endregion
+
+
+_subtitle_impl_source = "core_export"
+try:
+    from synarius_core.model import (  # type: ignore[attr-defined]
+        elementary_diagram_subtitle_for_geometry as _core_elementary_diagram_subtitle_for_geometry,
+    )
+except Exception as exc:  # noqa: BLE001
+    _subtitle_impl_source = "studio_fallback"
+    _agent_debug_log(
+        run_id="pre-fix",
+        hypothesis_id="H_SUBTITLE_IMPORT",
+        message="core_export_missing_using_fallback",
+        data={"exc": str(exc)},
+    )
+
+    def _core_elementary_diagram_subtitle_for_geometry(inst: object) -> str:
+        if not isinstance(inst, ElementaryInstance):
+            return ""
+        try:
+            v = inst.get("diagram.subtitle")
+            if isinstance(v, str) and v.strip():
+                return v.strip()[:28]
+        except Exception:
+            pass
+        try:
+            mid = inst.get("fmu.model_identifier")
+            if isinstance(mid, str) and mid.strip():
+                return mid.strip()[:28]
+        except Exception:
+            pass
+        return ""
+
+_agent_debug_log(
+    run_id="pre-fix",
+    hypothesis_id="H_SUBTITLE_IMPORT",
+    message="subtitle_import_resolution",
+    data={"source": _subtitle_impl_source},
+)
+
+elementary_diagram_subtitle_for_geometry = _core_elementary_diagram_subtitle_for_geometry
 
 # Global UI scale: 100 % nominal view uses 70 % of the former linear size (reverses mistaken 100/70 bump).
 UI_SCALE = 70.0 / 100.0
