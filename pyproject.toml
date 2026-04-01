@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synarius-studio"
-version = "0.1.14"
+version = "0.1.15"
 description = "PySide6 GUI for Synarius."
 readme = "README.md"
 requires-python = ">=3.10"

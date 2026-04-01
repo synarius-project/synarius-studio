@@ -43,11 +43,7 @@ from synarius_core.model import (
     Pin,
     Variable,
 )
-from synarius_core.model.diagram_geometry import (
-    ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE,
-    elementary_lib_header_height_scene,
-    variable_diagram_block_width_scene,
-)
+from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.model.connector_routing import (
     auto_orthogonal_bends,
     bends_absolute_to_relative,
@@ -123,6 +119,54 @@ _agent_debug_log(
 )
 
 elementary_diagram_subtitle_for_geometry = _core_elementary_diagram_subtitle_for_geometry
+
+_geometry_impl_source = "core_export"
+try:
+    from synarius_core.model.diagram_geometry import (  # type: ignore[attr-defined]
+        ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE,
+        elementary_lib_header_height_scene,
+    )
+except Exception as exc:  # noqa: BLE001
+    _geometry_impl_source = "studio_fallback"
+    _agent_debug_log(
+        run_id="pre-fix",
+        hypothesis_id="H_GEOMETRY_IMPORT",
+        message="core_geometry_exports_missing_using_fallback",
+        data={"exc": str(exc)},
+    )
+
+    ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE = 0.0
+
+    def elementary_lib_header_height_scene(title: str, subtitle: str, graphic_h: float = 0.0) -> float:
+        # Keep fallback numerically aligned with current core defaults.
+        _mod = 15.0 * (70.0 / 100.0)
+        _variable_height = 2.0 * _mod
+        _ELEMENTARY_LIB_HEADER_BAND_MIN = _mod * 1.38
+        _ELEMENTARY_LIB_TITLE_SUB_GAP = _mod * 0.1
+        _ELEMENTARY_LIB_GRAPHIC_GAP = _mod * 0.12
+        _ELEMENTARY_LIB_HEADER_GROUP_VPAD = _mod * 0.24
+        _tw, title_h = _approx_text_metrics(title, max(4.0, _variable_height * 0.45))
+        text_stack = title_h
+        sub = subtitle.strip()
+        if sub:
+            _sw, sub_h = _approx_text_metrics(sub[:28], max(7.0, _mod * 0.78))
+            text_stack += _ELEMENTARY_LIB_TITLE_SUB_GAP + sub_h
+        gap_tg = _ELEMENTARY_LIB_GRAPHIC_GAP if graphic_h > 0.0 else 0.0
+        stack_h = text_stack + gap_tg + float(graphic_h)
+        nudge = 0.1 * title_h
+        min_for_title_centered = max(0.0, 2.0 * stack_h - title_h - 2.0 * nudge) + 2.0
+        return max(
+            _ELEMENTARY_LIB_HEADER_BAND_MIN,
+            stack_h + _ELEMENTARY_LIB_HEADER_GROUP_VPAD,
+            min_for_title_centered,
+        )
+
+_agent_debug_log(
+    run_id="pre-fix",
+    hypothesis_id="H_GEOMETRY_IMPORT",
+    message="geometry_import_resolution",
+    data={"source": _geometry_impl_source},
+)
 
 # Global UI scale: 100 % nominal view uses 70 % of the former linear size (reverses mistaken 100/70 bump).
 UI_SCALE = 70.0 / 100.0
