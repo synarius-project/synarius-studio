@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.dataflow_sim import elementary_has_fmu_path
 from synarius_core.model import BasicOperator, BasicOperatorType, Connector, DataViewer, ElementaryInstance, Variable
 from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.model.connector_routing import (

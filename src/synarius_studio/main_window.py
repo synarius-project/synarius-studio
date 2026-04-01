@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QFrame,
     QGraphicsItem,
     QHBoxLayout,
     QLabel,
@@ -2292,7 +2291,6 @@ class MainWindow(QMainWindow):
         if db is None:
             return
         table = self._signals_table
-        single_only = False
         if table is not None and table.currentRow() >= 0:
             # Nur Mapping für die selektierte Signalzeile löschen.
             row = table.currentRow()

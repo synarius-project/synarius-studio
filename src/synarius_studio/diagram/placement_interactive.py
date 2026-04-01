@@ -3,13 +3,6 @@
 from __future__ import annotations
 
 import shlex
-
-# Drag from Variables panel → canvas (``QMimeData`` custom format).
-VARIABLE_NAME_DRAG_MIME = "application/x-synarius-variable-name"
-# Drag from Signals panel → variable block (mapping by drop on canvas).
-SIGNAL_NAME_DRAG_MIME = "application/x-synarius-signal-name"
-# Drag from Resources panel: UTF-8 ``<LibraryName>.<ElementId>`` (same as model ``type_key``).
-LIBRARY_ELEMENT_DRAG_MIME = "application/x-synarius-library-element"
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
@@ -38,6 +31,13 @@ from .dataflow_items import (
     VariableBlockItem,
     _snap_pos_half_module,
 )
+
+# Drag from Variables panel → canvas (``QMimeData`` custom format).
+VARIABLE_NAME_DRAG_MIME = "application/x-synarius-variable-name"
+# Drag from Signals panel → variable block (mapping by drop on canvas).
+SIGNAL_NAME_DRAG_MIME = "application/x-synarius-signal-name"
+# Drag from Resources panel: UTF-8 ``<LibraryName>.<ElementId>`` (same as model ``type_key``).
+LIBRARY_ELEMENT_DRAG_MIME = "application/x-synarius-library-element"
 
 
 def _placing_block_size_scene(mode: str, preview: QGraphicsItem | None = None) -> tuple[float, float]:

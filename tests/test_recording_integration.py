@@ -7,7 +7,7 @@ import unittest
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from synarius_core.model import Model, ModelElementType, SignalContainer, Variable  # noqa: E402
+from synarius_core.model import Model, ModelElementType, SignalContainer  # noqa: E402
 
 
 class RecordingIntegrationTest(unittest.TestCase):
