@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import math
-import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import NamedTuple
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -50,8 +47,43 @@ from synarius_core.model.connector_routing import (
     bends_relative_to_absolute,
     orthogonal_drag_segments,
     polyline_for_endpoints,
-    simplify_axis_aligned_polyline,
 )
+
+try:
+    from synarius_core.model.connector_routing import simplify_axis_aligned_polyline
+except ImportError:
+    # Packaged builds may pin an older synarius-core without this helper; keep in sync with core implementation.
+    _SIMPLIFY_EPS_POLY = 1e-2
+
+    def _axis_redundant_middle(
+        prev: tuple[float, float],
+        mid: tuple[float, float],
+        nxt: tuple[float, float],
+        eps: float = _SIMPLIFY_EPS_POLY,
+    ) -> bool:
+        x0, y0 = prev
+        x1, y1 = mid
+        x2, y2 = nxt
+        if abs(y0 - y1) < eps and abs(y1 - y2) < eps:
+            lo, hi = (x0, x2) if x0 <= x2 else (x2, x0)
+            return lo - eps <= x1 <= hi + eps
+        if abs(x0 - x1) < eps and abs(x1 - x2) < eps:
+            lo, hi = (y0, y2) if y0 <= y2 else (y2, y0)
+            return lo - eps <= y1 <= hi + eps
+        return False
+
+    def simplify_axis_aligned_polyline(
+        pts: list[tuple[float, float]], eps: float = _SIMPLIFY_EPS_POLY
+    ) -> list[tuple[float, float]]:
+        if len(pts) < 3:
+            return list(pts)
+        out: list[tuple[float, float]] = [pts[0]]
+        for i in range(1, len(pts) - 1):
+            if _axis_redundant_middle(out[-1], pts[i], pts[i + 1], eps):
+                continue
+            out.append(pts[i])
+        out.append(pts[-1])
+        return out
 
 from ..theme import (
     DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX,
@@ -59,40 +91,11 @@ from ..theme import (
     selection_highlight_qcolor,
 )
 
-
-def _agent_debug_log(*, run_id: str, hypothesis_id: str, message: str, data: dict[str, object]) -> None:
-    # region agent log
-    try:
-        payload = {
-            "sessionId": "743d05",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": "dataflow_items.py:subtitle_import",
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        log_path = Path(__file__).resolve().parents[3] / "debug-743d05.log"
-        with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # endregion
-
-
-_subtitle_impl_source = "core_export"
 try:
     from synarius_core.model import (  # type: ignore[attr-defined]
         elementary_diagram_subtitle_for_geometry as _core_elementary_diagram_subtitle_for_geometry,
     )
-except Exception as exc:  # noqa: BLE001
-    _subtitle_impl_source = "studio_fallback"
-    _agent_debug_log(
-        run_id="pre-fix",
-        hypothesis_id="H_SUBTITLE_IMPORT",
-        message="core_export_missing_using_fallback",
-        data={"exc": str(exc)},
-    )
+except Exception:  # noqa: BLE001
 
     def _core_elementary_diagram_subtitle_for_geometry(inst: object) -> str:
         if not isinstance(inst, ElementaryInstance):
@@ -111,29 +114,33 @@ except Exception as exc:  # noqa: BLE001
             pass
         return ""
 
-_agent_debug_log(
-    run_id="pre-fix",
-    hypothesis_id="H_SUBTITLE_IMPORT",
-    message="subtitle_import_resolution",
-    data={"source": _subtitle_impl_source},
-)
-
 elementary_diagram_subtitle_for_geometry = _core_elementary_diagram_subtitle_for_geometry
 
-_geometry_impl_source = "core_export"
 try:
     from synarius_core.model.diagram_geometry import (  # type: ignore[attr-defined]
         ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE,
         elementary_lib_header_height_scene,
     )
-except Exception as exc:  # noqa: BLE001
-    _geometry_impl_source = "studio_fallback"
-    _agent_debug_log(
-        run_id="pre-fix",
-        hypothesis_id="H_GEOMETRY_IMPORT",
-        message="core_geometry_exports_missing_using_fallback",
-        data={"exc": str(exc)},
-    )
+except Exception:  # noqa: BLE001
+
+    def _approx_text_metrics(name: str, pixel_size: float) -> tuple[float, float]:
+        if not name:
+            return (float(pixel_size), pixel_size * 1.18)
+        adv = 0.58 * pixel_size
+        w = 0.0
+        for ch in name:
+            if ch.isascii() and ch.isdigit():
+                w += adv * 0.62
+            elif ch.isascii() and ch in "ijl1|.!,:;'":
+                w += adv * 0.32
+            elif ch.isascii() and ch in "mwMW%@":
+                w += adv * 1.12
+            elif ch.isascii() and ch.isupper():
+                w += adv * 0.85
+            else:
+                w += adv * 1.05
+        h = pixel_size * 1.18
+        return (max(w, adv * 0.5), h)
 
     ELEMENTARY_LIB_HEADER_GRAPHIC_HEIGHT_SCENE = 0.0
 
@@ -160,13 +167,6 @@ except Exception as exc:  # noqa: BLE001
             stack_h + _ELEMENTARY_LIB_HEADER_GROUP_VPAD,
             min_for_title_centered,
         )
-
-_agent_debug_log(
-    run_id="pre-fix",
-    hypothesis_id="H_GEOMETRY_IMPORT",
-    message="geometry_import_resolution",
-    data={"source": _geometry_impl_source},
-)
 
 # Global UI scale: 100 % nominal view uses 70 % of the former linear size (reverses mistaken 100/70 bump).
 UI_SCALE = 70.0 / 100.0
