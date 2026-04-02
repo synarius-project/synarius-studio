@@ -423,28 +423,6 @@ class MainWindow(QMainWindow):
             library_catalog=LibraryCatalog(extra_roots=studio_library_extra_roots()),
             plugin_registry=PluginRegistry(extra_plugin_containers=[studio_plugins_dir()]),
         )
-        # region agent log
-        try:
-            _mod = sys.modules.get(type(self._controller).__module__)
-            _payload = {
-                "sessionId": "ccbe80",
-                "runId": "sim-start-attr",
-                "hypothesisId": "H_CTRL_CLASS_MISMATCH",
-                "location": "main_window.py:MainWindow.__init__",
-                "message": "controller_created",
-                "data": {
-                    "controller_class": type(self._controller).__name__,
-                    "controller_module": type(self._controller).__module__,
-                    "controller_module_file": str(getattr(_mod, "__file__", ""))[:300],
-                    "has_last_loaded_script_path": bool(hasattr(self._controller, "last_loaded_script_path")),
-                },
-                "timestamp": int(time.time() * 1000),
-            }
-            with Path(r"h:\Programmierung\Synarius\debug-ccbe80.log").open("a", encoding="utf-8") as _df:
-                _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # endregion
         self._history = _History()
         self._default_output_color = DEFAULT_OUTPUT_COLOR
         self._run_engine: SimpleRunEngine | None = None
@@ -958,7 +936,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Extensions installed; library and plugin lists reloaded.")
 
     def _warn_if_fmu_without_runtime_plugin(self) -> bool:
-        if self._controller.plugin_registry.plugin_for_capability("runtime:fmu"):
+        _lp = self._controller.plugin_registry.plugin_for_capability("runtime:fmu")
+        if _lp:
             return True
         from synarius_core.model import BasicOperator, ElementaryInstance, Variable
 
@@ -1308,50 +1287,8 @@ class MainWindow(QMainWindow):
         if not self._warn_if_fmu_without_runtime_plugin():
             self._sync_play_actions_checked(False)
             return
-        # region agent log
-        try:
-            _mod = sys.modules.get(type(self._controller).__module__)
-            _payload = {
-                "sessionId": "ccbe80",
-                "runId": "sim-start-attr",
-                "hypothesisId": "H_CTRL_ATTR_MISSING",
-                "location": "main_window.py:_try_start_simulation",
-                "message": "before_last_loaded_script_path_read",
-                "data": {
-                    "controller_class": type(self._controller).__name__,
-                    "controller_module": type(self._controller).__module__,
-                    "controller_module_file": str(getattr(_mod, "__file__", ""))[:300],
-                    "has_last_loaded_script_path": bool(hasattr(self._controller, "last_loaded_script_path")),
-                    "sim_mode_checked": bool(self.sim_mode_action.isChecked()),
-                },
-                "timestamp": int(time.time() * 1000),
-            }
-            with Path(r"h:\Programmierung\Synarius\debug-ccbe80.log").open("a", encoding="utf-8") as _df:
-                _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # endregion
         _md = None
         _lp = getattr(self._controller, "last_loaded_script_path", None)
-        # region agent log
-        try:
-            _payload = {
-                "sessionId": "ccbe80",
-                "runId": "sim-start-attr",
-                "hypothesisId": "H_CTRL_ATTR_MISSING",
-                "location": "main_window.py:_try_start_simulation",
-                "message": "resolved_last_loaded_script_path",
-                "data": {
-                    "lp_repr": repr(_lp)[:300],
-                    "lp_type": type(_lp).__name__ if _lp is not None else "NoneType",
-                },
-                "timestamp": int(time.time() * 1000),
-            }
-            with Path(r"h:\Programmierung\Synarius\debug-ccbe80.log").open("a", encoding="utf-8") as _df:
-                _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # endregion
         if _lp is not None:
             _md = _lp.parent
         # Dedicated run-loop worker thread (GUI remains responsive).
@@ -2736,29 +2673,6 @@ class MainWindow(QMainWindow):
         first_tok = line.split(None, 1)[0].lower() if line else ""
         if first_tok == "load":
             self._ensure_legacy_dataviewer_open_widget_attrs()
-            # region agent log
-            try:
-                _mod = sys.modules.get(type(self._controller).__module__)
-                _payload = {
-                    "sessionId": "ccbe80",
-                    "runId": "sim-start-attr",
-                    "hypothesisId": "H_LOAD_SETS_ATTR",
-                    "location": "main_window.py:_controller_execute_logged",
-                    "message": "after_load_command",
-                    "data": {
-                        "controller_class": type(self._controller).__name__,
-                        "controller_module": type(self._controller).__module__,
-                        "controller_module_file": str(getattr(_mod, "__file__", ""))[:300],
-                        "has_last_loaded_script_path": bool(hasattr(self._controller, "last_loaded_script_path")),
-                        "last_loaded_script_path_repr": repr(getattr(self._controller, "last_loaded_script_path", None))[:300],
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
-                with Path(r"h:\Programmierung\Synarius\debug-ccbe80.log").open("a", encoding="utf-8") as _df:
-                    _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-            # endregion
         if result is not None and str(result) != "":
             _CMD_LOG.info(
                 "command [%s] ok: %s → %s",
