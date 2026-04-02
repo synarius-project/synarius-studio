@@ -21,7 +21,7 @@ datas: list[tuple[str, str]] = [(str(_icon_dir), "synarius_studio/icons")]
 binaries: list = []
 hiddenimports: list[str] = []
 
-for _pkg in ("synarius_core", "synarius_dataviewer", "synariustools", "PySide6", "shiboken6"):
+for _pkg in ("synarius_core", "synarius_dataviewer", "synariustools", "fmpy", "PySide6", "shiboken6"):
     d, b, h = collect_all(_pkg)
     datas += d
     binaries += b

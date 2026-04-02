@@ -26,7 +26,8 @@ hiddenimports: list[str] = []
 
 # synarius_core is a git dependency; pull the full tree (hiddenimports alone can miss files).
 # synarius_dataviewer + synariustools ship in synarius-apps (pip install …/synarius-apps.git --no-deps in CI).
-for _pkg in ("synarius_core", "synarius_dataviewer", "synariustools", "PySide6", "shiboken6"):
+# fmpy must be bundled for runtime:fmu plugin import in frozen builds.
+for _pkg in ("synarius_core", "synarius_dataviewer", "synariustools", "fmpy", "PySide6", "shiboken6"):
     d, b, h = collect_all(_pkg)
     datas += d
     binaries += b
