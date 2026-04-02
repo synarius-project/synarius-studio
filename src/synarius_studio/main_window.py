@@ -1662,8 +1662,46 @@ class MainWindow(QMainWindow):
             pass
 
         try:
+            # region agent log
+            try:
+                _repo_root = Path(__file__).resolve().parents[3]
+                _apps_src = _repo_root / "synarius-apps" / "src"
+                _payload = {
+                    "sessionId": "ccbe80",
+                    "runId": "dataviewer-import",
+                    "hypothesisId": "H_FROZEN_NO_MONOREPO",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "before_dataviewer_import",
+                    "data": {
+                        "frozen": bool(getattr(sys, "frozen", False)),
+                        "meipass": str(getattr(sys, "_MEIPASS", ""))[:120],
+                        "monorepo_apps_src_exists": _apps_src.is_dir(),
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }
+                with Path("debug-ccbe80.log").open("a", encoding="utf-8") as _df:
+                    _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            # endregion
             from synarius_dataviewer.widgets.data_viewer import DataViewerShell
         except Exception as exc:
+            # region agent log
+            try:
+                _payload = {
+                    "sessionId": "ccbe80",
+                    "runId": "dataviewer-import",
+                    "hypothesisId": "H_MISSING_BUNDLE",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "dataviewer_import_failed",
+                    "data": {"exc_type": type(exc).__name__, "exc": str(exc)[:500]},
+                    "timestamp": int(time.time() * 1000),
+                }
+                with Path("debug-ccbe80.log").open("a", encoding="utf-8") as _df:
+                    _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            # endregion
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.warning(self, "Dataviewer", f"Dataviewer widget not available:\n{exc}")

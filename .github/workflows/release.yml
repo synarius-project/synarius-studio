@@ -43,6 +43,8 @@ jobs:
           }
           "__version__ = `"$version`"" | Out-File -Encoding utf8 src/synarius_studio/_version.py
       - run: pip install . pyinstaller
+      # Live DataViewer / recording viewer: same packages as monorepo ``synarius-apps`` (no core override).
+      - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
       - name: PyInstaller (one-file, Qt plugins + package data)
         run: pyinstaller --noconfirm --clean synarius_studio.spec
       - run: choco install wixtoolset -y
