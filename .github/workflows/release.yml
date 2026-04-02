@@ -7,6 +7,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  PYINSTALLER_VERSION: "6.19.0"
 
 jobs:
   build:
@@ -42,11 +43,27 @@ jobs:
             throw "Tag must match vX.Y.Z. Got: $tag"
           }
           "__version__ = `"$version`"" | Out-File -Encoding utf8 src/synarius_studio/_version.py
-      - run: pip install . pyinstaller
+      - run: pip install . "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
       # Live DataViewer / recording viewer: same packages as monorepo ``synarius-apps`` (no core override).
       - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
       - name: PyInstaller (one-file, Qt plugins + package data)
         run: pyinstaller --noconfirm --clean synarius_studio.spec
+      - name: Smoke test bundled EXE startup
+        shell: powershell
+        run: |
+          $env:SYNARIUS_STUDIO_SMOKE_EXIT = "1"
+          & "dist\synarius-studio.exe" --smoke-exit
+          if ($LASTEXITCODE -ne 0) {
+            throw "Smoke test failed with exit code $LASTEXITCODE"
+          }
+      - name: Upload PyInstaller diagnostics
+        uses: actions/upload-artifact@v5
+        with:
+          name: pyinstaller-diagnostics
+          path: |
+            build/**/warn-*.txt
+            build/**/xref-*.html
+          if-no-files-found: warn
       - run: choco install wixtoolset -y
       - name: Build MSI with WiX
         shell: powershell
@@ -156,6 +173,14 @@ jobs:
           "@ | Out-File -Encoding UTF8 installer.wxs
           candle.exe installer.wxs
           light.exe installer.wixobj -ext WixUIExtension -ext WixUtilExtension -o dist\synarius-studio-installer.msi
+      - name: Validate MSI if wix CLI available
+        shell: powershell
+        run: |
+          if (Get-Command wix -ErrorAction SilentlyContinue) {
+            wix msi validate "dist\synarius-studio-installer.msi"
+          } else {
+            Write-Host "wix CLI not available on runner; skipping wix msi validate."
+          }
       - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-installer

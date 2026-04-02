@@ -105,6 +105,7 @@ from .diagram.placement_interactive import VARIABLE_NAME_DRAG_MIME
 from .diagram.placement_interactive import SIGNAL_NAME_DRAG_MIME
 from .dataviewer_select_dialog import SelectDataViewerDialog
 from .fmu_import_dialog import FmuImportDialog
+from .resource_paths import prepend_dev_synarius_apps_src
 from .stimulation_dialog import StimulationDialog
 from .svg_icons import icon_from_inverted_standard_icon, icon_from_tinted_svg_file, qicon_panel_toggle_for_toolbar
 
@@ -1529,17 +1530,8 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, str(rec_path))
         _EXP_LOG.info("recording: double-click on %s (exists=%s)", rec_path, rec_path.is_file())
 
-        # DataViewer-App-Stack dynamisch verfügbar machen (wie bei Live-DataViewer).
-        try:
-            # Repository-Wurzel: ``.../Synarius`` (eine Ebene über ``synarius-studio``).
-            repo_root = Path(__file__).resolve().parents[3]
-            apps_src = repo_root / "synarius-apps" / "src"
-            if apps_src.exists():
-                s = str(apps_src)
-                if s not in sys.path:
-                    sys.path.insert(0, s)
-        except Exception:
-            pass
+        # Dev-only monorepo fallback (installed bundle should import from site-packages).
+        prepend_dev_synarius_apps_src()
 
         try:
             from synarius_dataviewer.widgets.data_viewer import DataViewerShell
@@ -1649,59 +1641,12 @@ class MainWindow(QMainWindow):
         variables = self._bound_variables_for_dataviewer_id(vid)
         names = [str(v.name) for v in variables]
 
-        # Das Dataviewer-Paket liegt im Monorepo unter ``synarius-apps/src`` und ist im Studio-Run
-        # nicht zwingend installiert. Für die Integration im Repo fügen wir den Pfad hinzu.
-        try:
-            repo_root = Path(__file__).resolve().parents[3]
-            apps_src = repo_root / "synarius-apps" / "src"
-            if apps_src.exists():
-                s = str(apps_src)
-                if s not in sys.path:
-                    sys.path.insert(0, s)
-        except Exception:
-            pass
+        # Dev-only monorepo fallback (installed bundle should import from site-packages).
+        prepend_dev_synarius_apps_src()
 
         try:
-            # region agent log
-            try:
-                _repo_root = Path(__file__).resolve().parents[3]
-                _apps_src = _repo_root / "synarius-apps" / "src"
-                _payload = {
-                    "sessionId": "ccbe80",
-                    "runId": "dataviewer-import",
-                    "hypothesisId": "H_FROZEN_NO_MONOREPO",
-                    "location": "main_window.py:_open_live_dataviewer_dialog",
-                    "message": "before_dataviewer_import",
-                    "data": {
-                        "frozen": bool(getattr(sys, "frozen", False)),
-                        "meipass": str(getattr(sys, "_MEIPASS", ""))[:120],
-                        "monorepo_apps_src_exists": _apps_src.is_dir(),
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
-                with Path("debug-ccbe80.log").open("a", encoding="utf-8") as _df:
-                    _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-            # endregion
             from synarius_dataviewer.widgets.data_viewer import DataViewerShell
         except Exception as exc:
-            # region agent log
-            try:
-                _payload = {
-                    "sessionId": "ccbe80",
-                    "runId": "dataviewer-import",
-                    "hypothesisId": "H_MISSING_BUNDLE",
-                    "location": "main_window.py:_open_live_dataviewer_dialog",
-                    "message": "dataviewer_import_failed",
-                    "data": {"exc_type": type(exc).__name__, "exc": str(exc)[:500]},
-                    "timestamp": int(time.time() * 1000),
-                }
-                with Path("debug-ccbe80.log").open("a", encoding="utf-8") as _df:
-                    _df.write(json.dumps(_payload, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-            # endregion
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.warning(self, "Dataviewer", f"Dataviewer widget not available:\n{exc}")
@@ -2713,32 +2658,7 @@ class MainWindow(QMainWindow):
     def _controller_execute_logged(self, cmd: str, *, source: str) -> str | None:
         """Single entry for ``MinimalController.execute``: every protocol line is logged (file + GUI)."""
         line = cmd.strip()
-        n_patched_pre = self._ensure_legacy_dataviewer_open_widget_attrs()
-        # region agent log
-        if ".open_widget" in line:
-            try:
-                import synarius_core.model.data_model as _dm
-
-                dvs = list(self._controller.model.iter_dataviewers())
-                payload = {
-                    "sessionId": "ccbe80",
-                    "runId": "verify-open-widget",
-                    "hypothesisId": "H_PINNED_CORE",
-                    "location": "main_window.py:_controller_execute_logged",
-                    "message": "before_execute_open_widget_command",
-                    "data": {
-                        "n_dataviewers": len(dvs),
-                        "n_patched_pre_execute": n_patched_pre,
-                        "all_have_open_widget": all("open_widget" in dv.attribute_dict for dv in dvs),
-                        "data_model_file": getattr(_dm, "__file__", ""),
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
-                with Path("debug-ccbe80.log").open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        # endregion
+        self._ensure_legacy_dataviewer_open_widget_attrs()
         _CMD_LOG.info("command [%s]: %s", source, line)
         try:
             result = self._controller.execute(cmd)

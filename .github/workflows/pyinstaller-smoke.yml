@@ -1,0 +1,42 @@
+name: PyInstaller Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PYINSTALLER_VERSION: "6.19.0"
+
+jobs:
+  windows-onedir-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install . "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+      - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
+      - name: Build onedir bundle
+        run: pyinstaller --noconfirm --clean synarius_studio_onedir.spec
+      - name: Smoke test onedir startup
+        shell: powershell
+        run: |
+          $env:SYNARIUS_STUDIO_SMOKE_EXIT = "1"
+          & "dist\synarius-studio\synarius-studio.exe" --smoke-exit
+          if ($LASTEXITCODE -ne 0) {
+            throw "Onedir smoke test failed with exit code $LASTEXITCODE"
+          }
+      - name: Upload onedir bundle
+        uses: actions/upload-artifact@v5
+        with:
+          name: pyinstaller-onedir
+          path: dist/synarius-studio/**
+      - name: Upload PyInstaller diagnostics
+        uses: actions/upload-artifact@v5
+        with:
+          name: pyinstaller-diagnostics-smoke
+          path: |
+            build/**/warn-*.txt
+            build/**/xref-*.html
+          if-no-files-found: warn
