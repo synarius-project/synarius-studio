@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 import shlex
@@ -310,7 +309,7 @@ class _RunLoopWorker(QObject):
     """Run SimpleRunEngine in a dedicated thread and publish live values."""
 
     # Use object payload for robust queued cross-thread delivery.
-    tick = QtSignal(float, object)  # sim_time_s, {var_name: value}
+    tick = QtSignal(float, object)  # simulation time_s (model clock), payload dict
     started_ok = QtSignal()
     start_failed = QtSignal(str)
     stopped = QtSignal()
@@ -333,7 +332,7 @@ class _RunLoopWorker(QObject):
         self._engine: SimpleRunEngine | None = None
         self._timer: QTimer | None = None
         self._stop_requested = False
-        self._t0 = 0.0
+        self._paused = False
         self._diag_emit_idx = 0
 
     @Slot()
@@ -351,8 +350,8 @@ class _RunLoopWorker(QObject):
                 self.start_failed.emit("Cannot simulate: invalid dataflow (e.g. cycle).")  # type: ignore[attr-defined]
                 self.stopped.emit()  # type: ignore[attr-defined]
                 return
-            self._t0 = time.perf_counter()
             self._stop_requested = False
+            self._paused = False
             self._timer = QTimer(self)
             self._timer.setInterval(self._tick_interval_ms)
             self._timer.timeout.connect(self._on_tick)
@@ -367,11 +366,21 @@ class _RunLoopWorker(QObject):
         self._stop_requested = True
 
     @Slot()
+    def request_pause(self) -> None:
+        self._paused = True
+
+    @Slot()
+    def request_resume(self) -> None:
+        self._paused = False
+
+    @Slot()
     def _on_tick(self) -> None:
         if self._stop_requested:
             if self._timer is not None:
                 self._timer.stop()
             self.stopped.emit()  # type: ignore[attr-defined]
+            return
+        if self._paused:
             return
         if self._engine is None:
             self.stopped.emit()  # type: ignore[attr-defined]
@@ -406,7 +415,7 @@ class _RunLoopWorker(QObject):
                             fv = float("nan")
                         fmu_ws[str(node.name)] = fv
             payload = {"variables": values, "fmu_workspace": fmu_ws}
-            self.tick.emit(time.perf_counter() - self._t0, payload)  # type: ignore[attr-defined]
+            self.tick.emit(float(self._engine.context.time_s), payload)  # type: ignore[attr-defined]
         except Exception:
             self.stopped.emit()  # type: ignore[attr-defined]
 
@@ -427,6 +436,7 @@ class MainWindow(QMainWindow):
         self._default_output_color = DEFAULT_OUTPUT_COLOR
         self._run_engine: SimpleRunEngine | None = None
         self._simulation_running = False
+        self._simulation_paused = False
         self._run_thread: QThread | None = None
         self._run_worker: _RunLoopWorker | None = None
         self._sim_mode_suppress_action = False
@@ -542,10 +552,15 @@ class MainWindow(QMainWindow):
         self.play_action.setIcon(
             icon_from_inverted_standard_icon(_st.standardIcon(QStyle.StandardPixmap.SP_MediaPlay), logical_side=24)
         )
-        self.play_action.setToolTip("Run or pause simulation (checked while running)")
+        self.play_action.setToolTip("Start or resume simulation")
         self.play_action.setCheckable(True)
         self.play_action.setEnabled(False)
         self.play_action.toggled.connect(self._on_play_action_toggled)
+
+        self.pause_action = QAction("Pause", self)
+        self.pause_action.setToolTip("Pause simulation (keeps current signals)")
+        self.pause_action.setEnabled(False)
+        self.pause_action.triggered.connect(self._on_simulation_pause)
 
         self.stop_action = QAction("Stop", self)
         self.stop_action.setIcon(
@@ -571,6 +586,9 @@ class MainWindow(QMainWindow):
         sim_icon_path = self._icons_dir / "office-chart-line-stacked.svg"
         if sim_icon_path.exists():
             self.sim_mode_action.setIcon(icon_from_tinted_svg_file(sim_icon_path, fg))
+        pause_icon_path = self._icons_dir / "kt-pause.svg"
+        if pause_icon_path.exists():
+            self.pause_action.setIcon(icon_from_tinted_svg_file(pause_icon_path, fg))
 
     _DIAGRAM_PALETTE_ICON_FILES: dict[str, str] = {
         "var": "var.svg",
@@ -680,6 +698,11 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._zoom_combo)
         self._zoom_combo.activated.connect(self._on_zoom_combo_activated)
         self._dataflow_view.zoom_percent_changed.connect(self._sync_zoom_combo_from_view)
+
+        toolbar.addSeparator()
+        toolbar.addAction(self.play_action)
+        toolbar.addAction(self.pause_action)
+        toolbar.addAction(self.stop_action)
 
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -806,6 +829,11 @@ class MainWindow(QMainWindow):
         self._canvas_play_action.setCheckable(True)
         self._canvas_play_action.toggled.connect(self._on_play_action_toggled)
         self._canvas_play_action.setVisible(False)
+        self._canvas_pause_action = QAction(self)
+        self._canvas_pause_action.setIcon(self.pause_action.icon())
+        self._canvas_pause_action.setToolTip(self.pause_action.toolTip())
+        self._canvas_pause_action.triggered.connect(self._on_simulation_pause)
+        self._canvas_pause_action.setVisible(False)
         self._canvas_stop_action = QAction(self)
         self._canvas_stop_action.setIcon(self.stop_action.icon())
         self._canvas_stop_action.setToolTip(self.stop_action.toolTip())
@@ -823,6 +851,7 @@ class MainWindow(QMainWindow):
 
         self._diagram_palette_toolbar.addSeparator()
         self._diagram_palette_toolbar.addAction(self._canvas_play_action)
+        self._diagram_palette_toolbar.addAction(self._canvas_pause_action)
         self._diagram_palette_toolbar.addAction(self._canvas_stop_action)
         self._diagram_palette_toolbar.addAction(self._canvas_record_action)
 
@@ -1098,6 +1127,7 @@ class MainWindow(QMainWindow):
         self._sync_dataviewer_items_visibility(on)
         # Global toolbar: Play stays enabled in sim mode (checked while the timer runs).
         self.play_action.setEnabled(on)
+        self.pause_action.setEnabled(on and self._simulation_running and not self._simulation_paused)
         self.stop_action.setEnabled(on and self._simulation_running)
         if on:
             self._sync_play_actions_checked(self._simulation_running)
@@ -1114,13 +1144,18 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._cache_diagram_palette_stack_height_after_layout)
         if (
             hasattr(self, "_canvas_play_action")
+            and hasattr(self, "_canvas_pause_action")
             and hasattr(self, "_canvas_stop_action")
             and hasattr(self, "_canvas_record_action")
         ):
             self._canvas_play_action.setVisible(on)
+            self._canvas_pause_action.setVisible(on)
             self._canvas_stop_action.setVisible(on)
             self._canvas_record_action.setVisible(on)
             self._canvas_play_action.setEnabled(on)
+            self._canvas_pause_action.setEnabled(
+                on and self._simulation_running and not self._simulation_paused
+            )
             self._canvas_stop_action.setEnabled(on and self._simulation_running)
             self._canvas_record_action.setEnabled(on)
         self.statusBar().showMessage("Simulation mode" if on else "Ready.")
@@ -1255,9 +1290,12 @@ class MainWindow(QMainWindow):
             self._canvas_play_action.setChecked(checked)
         self._sim_play_suppress_action = False
         if checked:
-            self._try_start_simulation()
-        elif self._simulation_running:
-            self._on_simulation_stop()
+            if self._simulation_running:
+                self._on_simulation_resume()
+            else:
+                self._try_start_simulation()
+        elif self._simulation_running and not self._simulation_paused:
+            self._on_simulation_pause()
 
     def _try_start_simulation(self) -> None:
         if not self.sim_mode_action.isChecked():
@@ -1310,18 +1348,56 @@ class MainWindow(QMainWindow):
         self._run_thread.finished.connect(self._on_run_thread_finished)
         # Mark as running before first tick arrives (queued signal order across threads).
         self._simulation_running = True
+        self._simulation_paused = False
+        self.pause_action.setEnabled(True)
         self.stop_action.setEnabled(True)
-        if hasattr(self, "_canvas_play_action") and hasattr(self, "_canvas_stop_action"):
+        if (
+            hasattr(self, "_canvas_play_action")
+            and hasattr(self, "_canvas_pause_action")
+            and hasattr(self, "_canvas_stop_action")
+        ):
+            self._canvas_pause_action.setEnabled(True)
             self._canvas_stop_action.setEnabled(True)
         self._run_thread.start()
+
+    def _on_simulation_pause(self) -> None:
+        if not self._simulation_running or self._simulation_paused:
+            return
+        if self._run_worker is not None:
+            self._run_worker.request_pause()
+        self._simulation_paused = True
+        self.pause_action.setEnabled(False)
+        if hasattr(self, "_canvas_pause_action"):
+            self._canvas_pause_action.setEnabled(False)
+        self._sync_play_actions_checked(False)
+        self.statusBar().showMessage("Simulation paused.")
+
+    def _on_simulation_resume(self) -> None:
+        if not self._simulation_running or not self._simulation_paused:
+            return
+        if self._run_worker is not None:
+            self._run_worker.request_resume()
+        self._simulation_paused = False
+        self.pause_action.setEnabled(True)
+        if hasattr(self, "_canvas_pause_action"):
+            self._canvas_pause_action.setEnabled(True)
+        self._sync_play_actions_checked(True)
+        self.statusBar().showMessage("Simulation running.")
 
     def _on_simulation_stop(self) -> None:
         # Stop request is asynchronous; final UI/state reset happens in _on_worker_stopped.
         if self._run_worker is not None:
             self._run_worker.request_stop()
+        self._simulation_paused = False
+        self.pause_action.setEnabled(False)
         if self.sim_mode_action.isChecked():
             self.stop_action.setEnabled(False)
-            if hasattr(self, "_canvas_play_action") and hasattr(self, "_canvas_stop_action"):
+            if (
+                hasattr(self, "_canvas_play_action")
+                and hasattr(self, "_canvas_pause_action")
+                and hasattr(self, "_canvas_stop_action")
+            ):
+                self._canvas_pause_action.setEnabled(False)
                 self._canvas_stop_action.setEnabled(False)
 
     def _on_worker_started(self) -> None:
@@ -1351,6 +1427,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message or "Cannot start simulation.")
         _EXP_LOG.error("simulation start failed: %s", message or "unknown")
         self._simulation_running = False
+        self._simulation_paused = False
+        self.pause_action.setEnabled(False)
+        if hasattr(self, "_canvas_pause_action"):
+            self._canvas_pause_action.setEnabled(False)
         self._sync_play_actions_checked(False)
 
     def _on_worker_tick(self, sim_time_s: float, value_by_name: object) -> None:
@@ -1385,9 +1465,13 @@ class MainWindow(QMainWindow):
 
     def _on_worker_stopped(self) -> None:
         self._simulation_running = False
+        self._simulation_paused = False
         self._run_engine = None
         self._refresh_variable_value_labels()
         self._variables_panel.refresh()
+        self.pause_action.setEnabled(False)
+        if hasattr(self, "_canvas_pause_action"):
+            self._canvas_pause_action.setEnabled(False)
         self._sync_play_actions_checked(False)
         self.statusBar().showMessage("Simulation stopped.")
         # In experiment mode, offer to record results when the Record action is checked.

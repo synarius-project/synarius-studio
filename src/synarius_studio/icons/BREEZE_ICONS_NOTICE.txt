@@ -7,6 +7,7 @@ The following files are taken from KDE Breeze Icons (KDE Frameworks):
   - document-save-symbolic.svg         (actions/32)
   - edit-undo-symbolic.svg             (actions/32)
   - edit-redo-symbolic.svg             (actions/32)
+  - kt-pause.svg                       (actions/22)
   - edit-undo-symbolic.svg             (actions/32)
   - edit-redo-symbolic.svg             (actions/32)
 
