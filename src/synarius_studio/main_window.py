@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -2660,9 +2661,46 @@ class MainWindow(QMainWindow):
             return text
         return text[:max_len] + "…"
 
+    def _ensure_legacy_dataviewer_open_widget_attrs(self) -> int:
+        """Pinned synarius-core (e.g. git install in release) may lack ``open_widget`` on DataViewer; CCP expects it."""
+        model = self._controller.model
+        n_patched = 0
+        for dv in model.iter_dataviewers():
+            if "open_widget" in dv.attribute_dict:
+                continue
+            dict.__setitem__(dv.attribute_dict, "open_widget", (False, None, None, True, True))
+            n_patched += 1
+        return n_patched
+
     def _controller_execute_logged(self, cmd: str, *, source: str) -> str | None:
         """Single entry for ``MinimalController.execute``: every protocol line is logged (file + GUI)."""
         line = cmd.strip()
+        n_patched_pre = self._ensure_legacy_dataviewer_open_widget_attrs()
+        # region agent log
+        if ".open_widget" in line:
+            try:
+                import synarius_core.model.data_model as _dm
+
+                dvs = list(self._controller.model.iter_dataviewers())
+                payload = {
+                    "sessionId": "ccbe80",
+                    "runId": "verify-open-widget",
+                    "hypothesisId": "H_PINNED_CORE",
+                    "location": "main_window.py:_controller_execute_logged",
+                    "message": "before_execute_open_widget_command",
+                    "data": {
+                        "n_dataviewers": len(dvs),
+                        "n_patched_pre_execute": n_patched_pre,
+                        "all_have_open_widget": all("open_widget" in dv.attribute_dict for dv in dvs),
+                        "data_model_file": getattr(_dm, "__file__", ""),
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }
+                with Path("debug-ccbe80.log").open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        # endregion
         _CMD_LOG.info("command [%s]: %s", source, line)
         try:
             result = self._controller.execute(cmd)
@@ -2672,6 +2710,10 @@ class MainWindow(QMainWindow):
         except Exception:
             _CMD_LOG.exception("command [%s] raised: %s", source, line)
             raise
+        # ``load`` replaces ``self._controller.model`` inside ``execute``; patch again for script lines / next UI cmd.
+        first_tok = line.split(None, 1)[0].lower() if line else ""
+        if first_tok == "load":
+            self._ensure_legacy_dataviewer_open_widget_attrs()
         if result is not None and str(result) != "":
             _CMD_LOG.info(
                 "command [%s] ok: %s → %s",
