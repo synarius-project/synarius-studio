@@ -52,10 +52,30 @@ jobs:
         shell: powershell
         run: |
           $env:SYNARIUS_STUDIO_SMOKE_EXIT = "1"
-          & "dist\synarius-studio.exe" --smoke-exit
-          if ($LASTEXITCODE -ne 0) {
-            throw "Smoke test failed with exit code $LASTEXITCODE"
+          $proc = Start-Process -FilePath "dist\synarius-studio.exe" -ArgumentList "--smoke-exit" -PassThru -Wait
+          if ($null -eq $proc.ExitCode) {
+            throw "Smoke test failed: process exit code is null."
           }
+          if ($proc.ExitCode -ne 0) {
+            throw "Smoke test failed with exit code $($proc.ExitCode)"
+          }
+      - name: Collect runtime log from smoke run
+        shell: powershell
+        run: |
+          $src = Join-Path $env:LOCALAPPDATA "Synarius\SynariusStudio\Logs\synarius-studio.log"
+          $dstDir = Join-Path $env:RUNNER_TEMP "synarius-smoke-logs"
+          New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
+          if (Test-Path $src) {
+            Copy-Item $src (Join-Path $dstDir "synarius-studio.log") -Force
+          } else {
+            Write-Host "Runtime smoke log not found at $src"
+          }
+      - name: Upload runtime smoke log
+        uses: actions/upload-artifact@v5
+        with:
+          name: runtime-smoke-log
+          path: ${{ runner.temp }}/synarius-smoke-logs/**
+          if-no-files-found: warn
       - name: Upload PyInstaller diagnostics
         uses: actions/upload-artifact@v5
         with:
@@ -63,6 +83,7 @@ jobs:
           path: |
             build/**/warn-*.txt
             build/**/xref-*.html
+            ${{ runner.temp }}/synarius-smoke-logs/**
           if-no-files-found: warn
       - run: choco install wixtoolset -y
       - name: Build MSI with WiX
