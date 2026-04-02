@@ -18,7 +18,7 @@ dependencies = [
   "PySide6>=6.0.0",
   "platformdirs>=4.0.0",
   # Core re-exports synarius_core.io (timeseries); that optional extra pulls numpy/pandas/pyarrow/asammdf.
-  "synarius-core[timeseries] @ git+https://github.com/synarius-project/synarius-core.git@946bc4b8498d1299a0ce5539e63b160878fcd7c7",
+  "synarius-core[timeseries] @ git+https://github.com/synarius-project/synarius-core.git@850d413c81aed7903a4c4aeb2f7a6d8cdd93acf5",
 ]
 
 [project.scripts]
