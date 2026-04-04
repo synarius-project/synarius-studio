@@ -1346,10 +1346,8 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     ) -> None:
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        r = self.rect()
         # Äußerer Block: wie Variable/Operator – weißer Block mit dunklem, relativ dickem Rand.
         outer = self._visible_body_rect()
-        outer_inset = MODULE * 0.25
         if self.isSelected():
             hr = _selection_halo_rect_from_base(outer)
             painter.setPen(Qt.PenStyle.NoPen)

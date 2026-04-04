@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 import shlex
-import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, cast
@@ -39,7 +38,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    QLineEdit,
     QSizePolicy,
     QSplitter,
     QStyle,
