@@ -20,10 +20,13 @@ def _load_run():
     studio_src = Path(__file__).resolve().parents[1]
     repo_root = studio_src.parents[1]
     core_src = repo_root / "synarius-core" / "src"
+    apps_src = repo_root / "synarius-apps" / "src"
     if str(studio_src) not in sys.path:
         sys.path.insert(0, str(studio_src))
     if core_src.is_dir() and str(core_src) not in sys.path:
         sys.path.insert(0, str(core_src))
+    if apps_src.is_dir() and str(apps_src.resolve()) not in sys.path:
+        sys.path.insert(0, str(apps_src.resolve()))
     from synarius_studio.app import run
 
     return run

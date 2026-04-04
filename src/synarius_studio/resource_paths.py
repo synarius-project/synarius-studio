@@ -21,6 +21,10 @@ def studio_icon_path(name: str = "synarius64.png") -> Path:
     return bundle_root() / "icons" / name
 
 
+def studio_splash_path(name: str = "splash.png") -> Path:
+    return bundle_root() / "icons" / name
+
+
 def prepend_dev_synarius_apps_src() -> bool:
     """Dev-only: add sibling monorepo ``synarius-apps/src`` when present."""
     if is_frozen():

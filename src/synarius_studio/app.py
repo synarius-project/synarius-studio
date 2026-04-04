@@ -4,11 +4,12 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtWidgets import QApplication, QSplashScreen, QStyleFactory
 
 from .main_window import MainWindow
-from .resource_paths import studio_icon_path
+from .resource_paths import studio_icon_path, studio_splash_path
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -56,7 +57,36 @@ def run(argv: Sequence[str] | None = None) -> int:
         # Fallback to the local studio icon if Dataviewer assets are not available.
         app.setWindowIcon(QIcon(str(studio_icon_path())))
 
+    splash: QSplashScreen | None = None
+    spath = studio_splash_path()
+    if spath.is_file():
+        raw = QPixmap(str(spath))
+        if not raw.isNull():
+            screen = app.primaryScreen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+                # Moderate size (not near full-screen); cap so the splash stays clearly a logo, not a wallpaper.
+                max_w = max(1, min(int(avail.width() * 0.45), 720))
+                max_h = max(1, min(int(avail.height() * 0.45), 480))
+                scaled = raw.scaled(
+                    max_w,
+                    max_h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            else:
+                scaled = raw
+            splash = QSplashScreen(scaled, Qt.WindowType.WindowStaysOnTopHint)
+            splash.show()
+            app.processEvents()
+
     window = MainWindow()
-    window.show()
+    window.showMaximized()
+    if splash is not None:
+        # Close immediately after the main window is shown. MainWindow defers heavy
+        # plugin imports to the next event-loop tick so we do not block here for minutes
+        # with only the splash visible.
+        app.processEvents()
+        splash.finish(window)
     return app.exec()
 

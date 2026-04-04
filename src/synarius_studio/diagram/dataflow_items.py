@@ -252,6 +252,15 @@ def _style_option_without_item_selection(option: QStyleOptionGraphicsItem) -> QS
     return opt
 
 
+def _selection_halo_rect_from_base(base: QRectF) -> QRectF:
+    pad = float(DIAGRAM_SELECTION_OVERHANG_PX)
+    return base.adjusted(-pad, -pad, pad, pad)
+
+
+def _selection_bounds_from_base(base: QRectF) -> QRectF:
+    return base.united(_selection_halo_rect_from_base(base))
+
+
 def _snap_pos_half_module(pos: QPointF) -> QPointF:
     step = MODULE * 0.5
     return QPointF(round(pos.x() / step) * step, round(pos.y() / step) * step)
@@ -794,10 +803,15 @@ class VariableBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
 
     def boundingRect(self) -> QRectF:
         r = QRectF(self.rect())
-        if not self._live_value_overlay:
-            return r
-        vr = self._value_label.mapRectToParent(self._value_label.boundingRect())
-        return r.united(vr)
+        base = r
+        if self._live_value_overlay:
+            vr = self._value_label.mapRectToParent(self._value_label.boundingRect())
+            base = base.united(vr)
+        return _selection_bounds_from_base(base)
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: object) -> object:
+        out = super().itemChange(change, value)
+        return out
 
     def paint(
         self,
@@ -923,6 +937,9 @@ class OperatorBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
             painter.drawRoundedRect(hr, rr, rr)
         painter.restore()
         super().paint(painter, _style_option_without_item_selection(option), widget)
+
+    def boundingRect(self) -> QRectF:
+        return _selection_bounds_from_base(QRectF(self.rect()))
 
     def operator(self) -> BasicOperator:
         return self._operator
@@ -1242,6 +1259,9 @@ class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         painter.restore()
         super().paint(painter, _style_option_without_item_selection(option), widget)
 
+    def boundingRect(self) -> QRectF:
+        return _selection_bounds_from_base(QRectF(self.rect()))
+
     def connection_point(self, pin_name: str) -> QPointF:
         pin = self._pins.get(pin_name)
         if pin is None:
@@ -1306,6 +1326,18 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
     def set_diagram_editing_enabled(self, _enabled: bool) -> None:
         """Visibility/interaction are driven by ``set_sim_canvas_visible`` from the main window."""
 
+    def _visible_body_rect(self) -> QRectF:
+        r = QRectF(self.rect())
+        outer_inset = MODULE * 0.25
+        return r.adjusted(outer_inset, outer_inset, -outer_inset, -outer_inset)
+
+    def boundingRect(self) -> QRectF:
+        return _selection_bounds_from_base(self._visible_body_rect())
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: object) -> object:
+        out = super().itemChange(change, value)
+        return out
+
     def paint(
         self,
         painter: QPainter,
@@ -1316,11 +1348,10 @@ class DataViewerBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = self.rect()
         # Äußerer Block: wie Variable/Operator – weißer Block mit dunklem, relativ dickem Rand.
+        outer = self._visible_body_rect()
         outer_inset = MODULE * 0.25
-        outer = r.adjusted(outer_inset, outer_inset, -outer_inset, -outer_inset)
         if self.isSelected():
-            pad = DIAGRAM_SELECTION_OVERHANG_PX
-            hr = outer.adjusted(-pad, -pad, pad, pad)
+            hr = _selection_halo_rect_from_base(outer)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(MARK_HIGHLIGHT_COLOR)
             rr = DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX

@@ -55,7 +55,7 @@ STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND = "#586cd4"
 
 # Diagram selection, console/table/rubber-band: same hue as ``STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND``.
 SELECTION_HIGHLIGHT = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
-SELECTION_HIGHLIGHT_ALPHA = 142
+SELECTION_HIGHLIGHT_ALPHA = 190
 SELECTION_HIGHLIGHT_TEXT = "#ffffff"
 # Toolbar icon buttons: hover/press ramp from active-action hue; combo box keeps gray hover above.
 STUDIO_TOOLBAR_ACTION_HOVER = _rgb_hex_scale(STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND, 0.40)
@@ -71,7 +71,7 @@ def selection_highlight_qcolor(*, opaque: bool = False) -> QColor:
 
 # Diagram canvas (scene coordinates, px): uniform selection halo for Variable/Operator/FMU/DataViewer
 # blocks and connector edges. (Blocks intentionally use no QGraphicsDropShadowEffect so pins stay shadow-free.)
-DIAGRAM_SELECTION_OVERHANG_PX = 2.0
+DIAGRAM_SELECTION_OVERHANG_PX = 3.5
 DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX = 3.0
 
 

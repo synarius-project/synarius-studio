@@ -6,10 +6,10 @@ import shlex
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, cast
 from uuid import UUID
 import numpy as np
-from PySide6.QtCore import QMimeData, QObject, QSize, Qt, QThread, QTimer, Signal as QtSignal, Slot
+from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QThread, QTimer, Signal as QtSignal, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -21,6 +21,8 @@ from PySide6.QtGui import (
     QIcon,
     QKeyEvent,
     QKeySequence,
+    QPainter,
+    QPixmap,
     QShowEvent,
     QTextCharFormat,
     QTextCursor,
@@ -37,6 +39,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QLineEdit,
     QSizePolicy,
     QSplitter,
     QStyle,
@@ -48,6 +51,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
     QHeaderView,
 )
 from pathlib import Path
@@ -105,6 +109,7 @@ from .diagram.placement_interactive import SIGNAL_NAME_DRAG_MIME
 from .dataviewer_select_dialog import SelectDataViewerDialog
 from .fmu_import_dialog import FmuImportDialog
 from .resource_paths import prepend_dev_synarius_apps_src
+from .simulation_step_count_field import SimulationStepCountField
 from .stimulation_dialog import StimulationDialog
 from .svg_icons import icon_from_inverted_standard_icon, icon_from_tinted_svg_file, qicon_panel_toggle_for_toolbar
 
@@ -115,6 +120,9 @@ ERROR_COLOR = "#FF6666"
 
 _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
+
+# Internal drag-and-drop for Measurements list row reordering.
+RECORDINGS_ROW_DRAG_MIME = "application/x-synarius-studio-recordings-row"
 
 
 @dataclass
@@ -305,6 +313,82 @@ class _SignalsMappingTable(QTableWidget):
         drag.exec(Qt.DropAction.CopyAction, Qt.DropAction.CopyAction)
 
 
+class _RecordingsTable(QTableWidget):
+    """Measurements list: reorder rows by drag-and-drop within the table."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(0, 2, parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QTableWidget.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setDragDropOverwriteMode(False)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasFormat(RECORDINGS_ROW_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if event.mimeData().hasFormat(RECORDINGS_ROW_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    @staticmethod
+    def _mime_source_row(md: QMimeData) -> int | None:
+        if not md.hasFormat(RECORDINGS_ROW_DRAG_MIME):
+            return None
+        qba = md.data(RECORDINGS_ROW_DRAG_MIME)
+        try:
+            payload = cast(bytes, qba.data()).decode("ascii").strip()
+            return int(payload)
+        except (TypeError, ValueError):
+            return None
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        src_row = self._mime_source_row(event.mimeData())
+        if src_row is None or event.source() is not self:
+            super().dropEvent(event)
+            return
+        n = self.rowCount()
+        if src_row < 0 or src_row >= n:
+            event.ignore()
+            return
+        y = int(event.position().y())
+        dest_row = self.rowAt(y)
+        if dest_row < 0:
+            dest_row = n
+        if dest_row == src_row:
+            event.acceptProposedAction()
+            return
+        items = [self.takeItem(src_row, c) for c in range(self.columnCount())]
+        self.removeRow(src_row)
+        if dest_row > src_row:
+            dest_row -= 1
+        dest_row = max(0, min(dest_row, self.rowCount()))
+        self.insertRow(dest_row)
+        for c, it in enumerate(items):
+            self.setItem(dest_row, c, it)
+        self.selectRow(dest_row)
+        event.acceptProposedAction()
+
+    def startDrag(self, supportedActions) -> None:  # noqa: ANN001
+        rows = sorted({idx.row() for idx in self.selectedIndexes()})
+        if not rows:
+            return
+        row = rows[0]
+        if row < 0 or self.item(row, 0) is None:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(RECORDINGS_ROW_DRAG_MIME, QByteArray(str(row).encode("ascii")))
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction, Qt.DropAction.MoveAction)
+
+
 class _RunLoopWorker(QObject):
     """Run SimpleRunEngine in a dedicated thread and publish live values."""
 
@@ -322,6 +406,7 @@ class _RunLoopWorker(QObject):
         tick_interval_ms: int = 25,
         plugin_registry: PluginRegistry | None = None,
         model_directory: Path | str | None = None,
+        apply_fmu_params_on_init: bool = False,
     ) -> None:
         super().__init__()
         self._model = model
@@ -329,6 +414,7 @@ class _RunLoopWorker(QObject):
         self._tick_interval_ms = int(tick_interval_ms)
         self._plugin_registry = plugin_registry
         self._model_directory = model_directory
+        self._apply_fmu_params_on_init = bool(apply_fmu_params_on_init)
         self._engine: SimpleRunEngine | None = None
         self._timer: QTimer | None = None
         self._stop_requested = False
@@ -343,6 +429,9 @@ class _RunLoopWorker(QObject):
                 dt_s=self._dt_s,
                 plugin_registry=self._plugin_registry,
                 model_directory=self._model_directory,
+            )
+            self._engine.context.options["fmu_apply_parameters_on_init"] = bool(
+                self._apply_fmu_params_on_init
             )
             self._engine.init()
             self._diag_emit_idx = len(list(getattr(self._engine.context, "diagnostics", []) or []))
@@ -428,9 +517,14 @@ class MainWindow(QMainWindow):
         studio_icon = QIcon(str(Path(__file__).resolve().parent / "icons" / "synarius64.png"))
         self.setWindowIcon(studio_icon)
         self.resize(1200, 750)
+        # Avoid studio_library_extra_roots() here: iterdir() on %LOCALAPPDATA%/Synarius/Lib can block
+        # (network/cloud path) while the splash is still the only visible UI.
         self._controller = MinimalController(
-            library_catalog=LibraryCatalog(extra_roots=studio_library_extra_roots()),
-            plugin_registry=PluginRegistry(extra_plugin_containers=[studio_plugins_dir()]),
+            library_catalog=LibraryCatalog(extra_roots=(), defer_initial_load=True),
+            plugin_registry=PluginRegistry(
+                extra_plugin_containers=(),
+                defer_initial_load=True,
+            ),
         )
         self._history = _History()
         self._default_output_color = DEFAULT_OUTPUT_COLOR
@@ -444,6 +538,8 @@ class MainWindow(QMainWindow):
         self._last_applied_simulation_mode: bool | None = None
         # Laufende dynamische DataViewer-Fenster pro Viewer-ID.
         self._live_dataviewers: dict[int, QWidget] = {}
+        # Beim Verlassen des Experimentier-Modus geschlossene Viewer-IDs (werden beim erneuten Aktivieren wieder geöffnet).
+        self._live_dataviewers_reopen_after_sim: list[int] = []
         self._live_series_buffers: dict[str, tuple[list[float], list[float]]] = {}
         self._live_series_t0 = time.perf_counter()
         self._live_viewer_autorange_tick = 0
@@ -456,6 +552,14 @@ class MainWindow(QMainWindow):
         self._record_series_t0: float = 0.0
         self._recordings_table: QTableWidget | None = None
         self._signals_table: QTableWidget | None = None
+        self._sim_step_count: int = 10
+        self._sim_steps_remaining: int = 0
+        self._sim_hold_reinit_pending: bool = False
+        self._sim_restart_after_hold_pending: bool = False
+        self._sim_time_offset_s: float = 0.0
+        self._sim_time_last_s: float = 0.0
+        self._sim_step_count_fields: list[SimulationStepCountField] = []
+        self._sim_step_count_actions: list[QWidgetAction] = []
 
         central = QWidget(self)
         root_layout = QVBoxLayout(central)
@@ -502,6 +606,28 @@ class MainWindow(QMainWindow):
             self._build_log_emitter,
             self._experiment_log_emitter,
         )
+        QTimer.singleShot(0, self._deferred_startup_library_and_plugins)
+
+    @Slot()
+    def _deferred_startup_library_and_plugins(self) -> None:
+        try:
+            cat = self._controller.library_catalog
+            cat.set_extra_roots(studio_library_extra_roots())
+            cat.reload()
+            self._controller.alias_roots["@libraries"] = cat.root
+            self._refresh_resources_panel()
+        except Exception:
+            _EXP_LOG.exception("deferred library catalog load failed")
+        try:
+            reg = self._controller.plugin_registry
+            try:
+                pd = studio_plugins_dir()
+                reg.set_extra_plugin_containers([pd] if pd.is_dir() else [])
+            except OSError:
+                reg.set_extra_plugin_containers([])
+            reg.reload()
+        except Exception:
+            _EXP_LOG.exception("deferred plugin registry load failed")
 
     def _create_actions(self) -> None:
         self._icons_dir = Path(__file__).resolve().parent / "icons"
@@ -559,6 +685,7 @@ class MainWindow(QMainWindow):
 
         self.pause_action = QAction("Pause", self)
         self.pause_action.setToolTip("Pause simulation (keeps current signals)")
+        self.pause_action.setCheckable(True)
         self.pause_action.setEnabled(False)
         self.pause_action.triggered.connect(self._on_simulation_pause)
 
@@ -569,6 +696,17 @@ class MainWindow(QMainWindow):
         self.stop_action.setToolTip("Stop simulation")
         self.stop_action.setEnabled(False)
         self.stop_action.triggered.connect(self._on_simulation_stop)
+        self.step_action = QAction("Step", self)
+        self.step_action.setToolTip("Run N simulation steps and then pause")
+        self.step_action.setEnabled(False)
+        self.step_action.triggered.connect(self._on_simulation_step_action_triggered)
+        self.stop_hold_action = QAction("Stop/Hold", self)
+        self.stop_hold_action.setToolTip(
+            "Pause simulation and force model re-initialization before next resume"
+        )
+        self.stop_hold_action.setCheckable(True)
+        self.stop_hold_action.setEnabled(False)
+        self.stop_hold_action.triggered.connect(self._on_simulation_stop_hold)
 
         self._sync_breeze_file_action_icons()
 
@@ -589,6 +727,32 @@ class MainWindow(QMainWindow):
         pause_icon_path = self._icons_dir / "kt-pause.svg"
         if pause_icon_path.exists():
             self.pause_action.setIcon(icon_from_tinted_svg_file(pause_icon_path, fg))
+        self.stop_hold_action.setIcon(self._outlined_stop_square_icon(fg, logical_side=24))
+        steps_icon_path = self._icons_dir / "steps.svg"
+        if steps_icon_path.exists():
+            self.step_action.setIcon(icon_from_tinted_svg_file(steps_icon_path, fg))
+        if hasattr(self, "_canvas_pause_action"):
+            self._canvas_pause_action.setIcon(self.pause_action.icon())
+        if hasattr(self, "_canvas_stop_hold_action"):
+            self._canvas_stop_hold_action.setIcon(self.stop_hold_action.icon())
+        if hasattr(self, "_canvas_step_action"):
+            self._canvas_step_action.setIcon(self.step_action.icon())
+
+    @staticmethod
+    def _outlined_stop_square_icon(color: QColor, logical_side: int = 24) -> QIcon:
+        side = max(12, int(logical_side))
+        px = QPixmap(side, side)
+        px.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pen = painter.pen()
+        pen.setColor(color)
+        pen.setWidth(max(1, side // 8))
+        painter.setPen(pen)
+        inset = max(2, side // 4)
+        painter.drawRect(inset, inset, side - (2 * inset), side - (2 * inset))
+        painter.end()
+        return QIcon(px)
 
     _DIAGRAM_PALETTE_ICON_FILES: dict[str, str] = {
         "var": "var.svg",
@@ -698,11 +862,6 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._zoom_combo)
         self._zoom_combo.activated.connect(self._on_zoom_combo_activated)
         self._dataflow_view.zoom_percent_changed.connect(self._sync_zoom_combo_from_view)
-
-        toolbar.addSeparator()
-        toolbar.addAction(self.play_action)
-        toolbar.addAction(self.pause_action)
-        toolbar.addAction(self.stop_action)
 
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -815,14 +974,14 @@ class MainWindow(QMainWindow):
 
         # Reserve exactly the palette column height in sim mode (measured in edit mode / before hide).
         self._diagram_palette_measured_stack_h = 0
+        self._diagram_palette_measured_width = 0
         self._diagram_palette_mode_spacer = QWidget(canvas_host)
         self._diagram_palette_mode_spacer.setFixedHeight(0)
         self._diagram_palette_mode_spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._diagram_palette_mode_spacer.setVisible(False)
         self._diagram_palette_toolbar.addWidget(self._diagram_palette_mode_spacer)
 
-        # Canvas-local simulation controls: mirror Play/Stop from the main toolbar,
-        # only shown while simulation mode is active.
+        # Canvas-local Play/Pause/Stop (not on the main toolbar); visible only in simulation (experiment) mode.
         self._canvas_play_action = QAction(self)
         self._canvas_play_action.setIcon(self.play_action.icon())
         self._canvas_play_action.setToolTip(self.play_action.toolTip())
@@ -832,6 +991,7 @@ class MainWindow(QMainWindow):
         self._canvas_pause_action = QAction(self)
         self._canvas_pause_action.setIcon(self.pause_action.icon())
         self._canvas_pause_action.setToolTip(self.pause_action.toolTip())
+        self._canvas_pause_action.setCheckable(True)
         self._canvas_pause_action.triggered.connect(self._on_simulation_pause)
         self._canvas_pause_action.setVisible(False)
         self._canvas_stop_action = QAction(self)
@@ -839,6 +999,19 @@ class MainWindow(QMainWindow):
         self._canvas_stop_action.setToolTip(self.stop_action.toolTip())
         self._canvas_stop_action.triggered.connect(self._on_simulation_stop)
         self._canvas_stop_action.setVisible(False)
+        self._canvas_stop_hold_action = QAction(self)
+        self._canvas_stop_hold_action.setIcon(self.stop_hold_action.icon())
+        self._canvas_stop_hold_action.setToolTip(self.stop_hold_action.toolTip())
+        self._canvas_stop_hold_action.setCheckable(True)
+        self._canvas_stop_hold_action.triggered.connect(self._on_simulation_stop_hold)
+        self._canvas_stop_hold_action.setVisible(False)
+        self._canvas_step_action = QAction(self)
+        self._canvas_step_action.setIcon(self.step_action.icon())
+        self._canvas_step_action.setToolTip(self.step_action.toolTip())
+        self._canvas_step_action.triggered.connect(self._on_simulation_step_action_triggered)
+        self._canvas_step_action.setVisible(False)
+        self._canvas_step_count_action = self._create_step_count_widget_action(self._diagram_palette_toolbar)
+        self._canvas_step_count_action.setVisible(False)
         self._canvas_record_action = QAction(self)
         self._canvas_record_action.setCheckable(True)
         self._canvas_record_action.setToolTip(
@@ -852,7 +1025,11 @@ class MainWindow(QMainWindow):
         self._diagram_palette_toolbar.addSeparator()
         self._diagram_palette_toolbar.addAction(self._canvas_play_action)
         self._diagram_palette_toolbar.addAction(self._canvas_pause_action)
+        self._diagram_palette_toolbar.addAction(self._canvas_stop_hold_action)
         self._diagram_palette_toolbar.addAction(self._canvas_stop_action)
+        self._diagram_palette_toolbar.addAction(self._canvas_step_action)
+        self._diagram_palette_toolbar.addAction(self._canvas_step_count_action)
+        self._diagram_palette_toolbar.addSeparator()
         self._diagram_palette_toolbar.addAction(self._canvas_record_action)
 
         canvas_host_layout.addWidget(self._diagram_palette_toolbar, 0)
@@ -1078,6 +1255,22 @@ class MainWindow(QMainWindow):
         else:
             h = self._diagram_palette_measured_stack_h or self._diagram_palette_spacer_fallback_height()
         self._diagram_palette_mode_spacer.setFixedHeight(max(h, 8))
+        self._apply_diagram_palette_reference_width()
+
+    def _diagram_palette_width(self) -> int:
+        tb = self._diagram_palette_toolbar
+        # Use hint-based width only; current widget width may be stale/forced from a previous mode.
+        w = max(tb.sizeHint().width(), tb.minimumSizeHint().width())
+        return int(max(28, w))
+
+    def _apply_diagram_palette_reference_width(self) -> None:
+        if not hasattr(self, "_diagram_palette_toolbar"):
+            return
+        ref_w = int(getattr(self, "_diagram_palette_measured_width", 0) or 0)
+        if ref_w <= 0:
+            return
+        self._diagram_palette_toolbar.setMinimumWidth(ref_w)
+        self._diagram_palette_toolbar.setMaximumWidth(ref_w)
 
     def _cache_diagram_palette_stack_height_after_layout(self) -> None:
         if self.sim_mode_action.isChecked():
@@ -1085,6 +1278,10 @@ class MainWindow(QMainWindow):
         h = self._diagram_palette_action_stack_height()
         if h >= 8:
             self._diagram_palette_measured_stack_h = h
+        w = self._diagram_palette_width()
+        if w >= 28:
+            self._diagram_palette_measured_width = w
+            self._apply_diagram_palette_reference_width()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -1096,6 +1293,7 @@ class MainWindow(QMainWindow):
         if self.sim_mode_action.isChecked():
             if self._diagram_palette_measured_stack_h >= 8:
                 self._diagram_palette_mode_spacer.setFixedHeight(self._diagram_palette_measured_stack_h)
+            self._apply_diagram_palette_reference_width()
             return
         self._cache_diagram_palette_stack_height_after_layout()
 
@@ -1110,8 +1308,13 @@ class MainWindow(QMainWindow):
         self._sim_mode_suppress_action = False
         if on == self._last_applied_simulation_mode:
             return
+        was_on = self._last_applied_simulation_mode is True
         self._last_applied_simulation_mode = on
+        if was_on and not on:
+            self._close_live_dataviewers_for_sim_mode_exit()
         self._apply_simulation_mode_visuals(on)
+        if not was_on and on:
+            self._reopen_live_dataviewers_after_sim_mode_enter()
 
     def _apply_simulation_mode_visuals(self, on: bool) -> None:
         if not on and self._simulation_running:
@@ -1125,15 +1328,36 @@ class MainWindow(QMainWindow):
         self._apply_diagram_edit_capabilities(not on)
         self._sync_live_value_overlays(on)
         self._sync_dataviewer_items_visibility(on)
-        # Global toolbar: Play stays enabled in sim mode (checked while the timer runs).
+        # Internal runtime actions (canvas toolbar only in simulation mode): keep enabled state in sync.
         self.play_action.setEnabled(on)
-        self.pause_action.setEnabled(on and self._simulation_running and not self._simulation_paused)
+        pause_may = (
+            on
+            and self._simulation_running
+            and not self._simulation_paused
+            and not self._sim_hold_reinit_pending
+        )
+        self.pause_action.setEnabled(pause_may)
         self.stop_action.setEnabled(on and self._simulation_running)
+        self._set_stop_hold_actions_enabled(on and self._stop_hold_actions_may_be_enabled())
+        self._sync_stop_hold_actions_checked(on and self._sim_hold_reinit_pending)
+        if self._sim_hold_reinit_pending:
+            self._sync_pause_actions_checked(False)
+        self.step_action.setEnabled(on)
+        alive_step_actions: list[QWidgetAction] = []
+        for act in self._sim_step_count_actions:
+            try:
+                act.setEnabled(on)
+                act.setVisible(on)
+                alive_step_actions.append(act)
+            except RuntimeError:
+                continue
+        self._sim_step_count_actions = alive_step_actions
         if on:
             self._sync_play_actions_checked(self._simulation_running)
         else:
             self._sync_play_actions_checked(False)
-        # Canvas toolbar: hide placement palette in simulation, show Play/Stop/Record there.
+            self._cache_diagram_palette_stack_height_after_layout()
+        # Canvas toolbar: hide placement palette in simulation; show runtime controls only then.
         if on:
             self._prepare_diagram_palette_mode_spacer_height()
         for act in getattr(self, "_diagram_palette_actions", []):
@@ -1142,21 +1366,28 @@ class MainWindow(QMainWindow):
             self._diagram_palette_mode_spacer.setVisible(on)
         if not on:
             QTimer.singleShot(0, self._cache_diagram_palette_stack_height_after_layout)
+        self._apply_diagram_palette_reference_width()
         if (
             hasattr(self, "_canvas_play_action")
             and hasattr(self, "_canvas_pause_action")
             and hasattr(self, "_canvas_stop_action")
+            and hasattr(self, "_canvas_stop_hold_action")
+            and hasattr(self, "_canvas_step_action")
+            and hasattr(self, "_canvas_step_count_action")
             and hasattr(self, "_canvas_record_action")
         ):
             self._canvas_play_action.setVisible(on)
             self._canvas_pause_action.setVisible(on)
             self._canvas_stop_action.setVisible(on)
+            self._canvas_stop_hold_action.setVisible(on)
+            self._canvas_step_action.setVisible(on)
+            self._canvas_step_count_action.setVisible(on)
             self._canvas_record_action.setVisible(on)
             self._canvas_play_action.setEnabled(on)
-            self._canvas_pause_action.setEnabled(
-                on and self._simulation_running and not self._simulation_paused
-            )
+            self._canvas_pause_action.setEnabled(pause_may)
             self._canvas_stop_action.setEnabled(on and self._simulation_running)
+            self._canvas_step_action.setEnabled(on)
+            self._canvas_step_count_action.setEnabled(on)
             self._canvas_record_action.setEnabled(on)
         self.statusBar().showMessage("Simulation mode" if on else "Ready.")
         for tb in (self._main_toolbar, self._diagram_palette_toolbar):
@@ -1271,12 +1502,109 @@ class MainWindow(QMainWindow):
             self._sync_diagram_view_from_core_after_console(ln)
 
     def _sync_play_actions_checked(self, checked: bool) -> None:
-        """Keep main and canvas Play actions in the same check state without re-entering toggle logic."""
+        """Keep internal and canvas Play actions in the same check state without re-entering toggle logic."""
         self._sim_play_suppress_action = True
         self.play_action.setChecked(checked)
         if hasattr(self, "_canvas_play_action"):
             self._canvas_play_action.setChecked(checked)
         self._sim_play_suppress_action = False
+
+    def _sync_pause_actions_checked(self, checked: bool) -> None:
+        self.pause_action.setChecked(checked)
+        if hasattr(self, "_canvas_pause_action"):
+            self._canvas_pause_action.setChecked(checked)
+
+    def _sync_stop_hold_actions_checked(self, checked: bool) -> None:
+        self.stop_hold_action.setChecked(checked)
+        if hasattr(self, "_canvas_stop_hold_action"):
+            self._canvas_stop_hold_action.setChecked(checked)
+
+    def _stop_hold_actions_may_be_enabled(self) -> bool:
+        """Stop/Hold is only available while running, not while Pause is latched, and not while hold is active."""
+        return bool(
+            self._simulation_running
+            and not self.pause_action.isChecked()
+            and not self._sim_hold_reinit_pending
+        )
+
+    def _set_stop_hold_actions_enabled(self, enabled: bool) -> None:
+        self.stop_hold_action.setEnabled(enabled)
+        if hasattr(self, "_canvas_stop_hold_action"):
+            self._canvas_stop_hold_action.setEnabled(enabled)
+
+    def _create_step_count_widget_action(
+        self, parent: QObject, *, expand_in_toolbar_slot: bool = True
+    ) -> QWidgetAction:
+        act = QWidgetAction(parent)
+        compact_qss = (
+            "QLineEdit { min-height: 16px; max-height: 16px; font-size: 9px; "
+            "padding: 0px 2px; border: 1px solid #666; border-radius: 2px; "
+            "background: #262626; color: #f5f5f5; }"
+        )
+        # Popup uses a composite widget: QSpinBox without native buttons + QToolButtons with painted arrows.
+        popup_qss = (
+            "QSpinBox { min-height: 24px; max-height: 24px; font-size: 12px; "
+            "padding: 2px 6px; border: none; background: #262626; color: #f5f5f5; }"
+        )
+        tip = "Number of simulation steps for the Step action"
+        field = SimulationStepCountField(
+            initial=str(max(1, int(self._sim_step_count))),
+            compact_style=compact_qss,
+            popup_style=popup_qss,
+            max_length=6,
+            tooltip=tip,
+            expand_in_toolbar_slot=expand_in_toolbar_slot,
+        )
+        field.valueCommitted.connect(self._on_step_count_value_committed)
+        act.setDefaultWidget(field)
+        self._sim_step_count_fields.append(field)
+        self._sim_step_count_actions.append(act)
+        return act
+
+    def _normalized_step_count(self, raw: str) -> int:
+        try:
+            val = int(str(raw).strip())
+        except Exception:
+            return max(1, int(self._sim_step_count))
+        return max(1, val)
+
+    def _on_step_count_value_committed(self, raw: str) -> None:
+        self._sim_step_count = self._normalized_step_count(raw)
+        text = str(self._sim_step_count)
+        alive: list[SimulationStepCountField] = []
+        for fld in self._sim_step_count_fields:
+            try:
+                fld.set_display_value(text)
+                alive.append(fld)
+            except RuntimeError:
+                continue
+        self._sim_step_count_fields = alive
+
+    def _on_simulation_step_action_triggered(self) -> None:
+        if not self.sim_mode_action.isChecked():
+            return
+        self._sim_steps_remaining = max(1, int(self._sim_step_count))
+        if not self._simulation_running:
+            self._sync_play_actions_checked(True)
+            self._try_start_simulation()
+        elif self._simulation_paused:
+            self._on_simulation_resume()
+        self.statusBar().showMessage(f"Simulation stepping: {self._sim_steps_remaining} steps queued.")
+
+    def _on_simulation_stop_hold(self) -> None:
+        if not self._simulation_running:
+            return
+        if self.pause_action.isChecked() or self._simulation_paused:
+            self.statusBar().showMessage("Stop/Hold has no effect while Pause is active.")
+            return
+        self._sim_steps_remaining = 0
+        if not self._simulation_paused:
+            self._on_simulation_pause()
+        self._sync_pause_actions_checked(False)
+        self._sim_hold_reinit_pending = True
+        self._sync_stop_hold_actions_checked(True)
+        self._set_stop_hold_actions_enabled(False)
+        self.statusBar().showMessage("Simulation hold active. Next resume re-initializes the model.")
 
     def _on_play_action_toggled(self, checked: bool) -> None:
         if self._sim_play_suppress_action:
@@ -1298,21 +1626,32 @@ class MainWindow(QMainWindow):
             self._on_simulation_pause()
 
     def _try_start_simulation(self) -> None:
+        if self._sim_hold_reinit_pending and self._simulation_running:
+            self._sim_restart_after_hold_pending = True
+            if self._run_worker is not None:
+                self._run_worker.request_stop()
+            return
         if not self.sim_mode_action.isChecked():
             return
-        self._clear_experiment_log_view()
-        # Jede Simulation mit frischer Zeitachse und leeren Live-Buffern starten,
-        # damit keine Totzeit/Altwerte aus vorherigen Läufen sichtbar bleiben.
-        self._live_series_buffers.clear()
-        self._live_series_t0 = time.perf_counter()
-        self._reset_open_live_dataviewers_for_new_run()
+        preserve_series = bool(self._sim_hold_reinit_pending)
+        if not preserve_series:
+            self._clear_experiment_log_view()
+            # Jede Simulation mit frischer Zeitachse und leeren Live-Buffern starten,
+            # damit keine Totzeit/Altwerte aus vorherigen Läufen sichtbar bleiben.
+            self._live_series_buffers.clear()
+            self._live_series_t0 = time.perf_counter()
+            self._sim_time_offset_s = 0.0
+            self._sim_time_last_s = 0.0
+            self._reset_open_live_dataviewers_for_new_run()
+        else:
+            self._sim_time_offset_s = max(0.0, float(self._sim_time_last_s))
         _EXP_LOG.info(
             "simulation start: reset live buffers (size=%d), live_t0=%.6f",
             len(self._live_series_buffers),
             self._live_series_t0,
         )
         # Reset recording buffers at the start of a run if experiment recording is enabled.
-        if hasattr(self, "_canvas_record_action") and self._canvas_record_action.isChecked():
+        if (not preserve_series) and hasattr(self, "_canvas_record_action") and self._canvas_record_action.isChecked():
             self._record_series_buffers.clear()
             self._record_series_t0 = time.perf_counter()
             _EXP_LOG.info(
@@ -1320,6 +1659,8 @@ class MainWindow(QMainWindow):
                 len(self._record_series_buffers),
                 self._record_series_t0,
             )
+        elif preserve_series and hasattr(self, "_canvas_record_action") and self._canvas_record_action.isChecked():
+            _EXP_LOG.info("simulation hold-resume: keep existing recording buffers")
         else:
             _EXP_LOG.info("simulation start: recording disabled")
         if not self._warn_if_fmu_without_runtime_plugin():
@@ -1337,6 +1678,7 @@ class MainWindow(QMainWindow):
             tick_interval_ms=25,
             plugin_registry=self._controller.plugin_registry,
             model_directory=_md,
+            apply_fmu_params_on_init=preserve_series,
         )
         self._run_worker.moveToThread(self._run_thread)
         self._run_thread.started.connect(self._run_worker.start)
@@ -1351,29 +1693,50 @@ class MainWindow(QMainWindow):
         self._simulation_paused = False
         self.pause_action.setEnabled(True)
         self.stop_action.setEnabled(True)
+        self._set_stop_hold_actions_enabled(True)
+        self.step_action.setEnabled(True)
         if (
             hasattr(self, "_canvas_play_action")
             and hasattr(self, "_canvas_pause_action")
             and hasattr(self, "_canvas_stop_action")
+            and hasattr(self, "_canvas_stop_hold_action")
+            and hasattr(self, "_canvas_step_action")
         ):
             self._canvas_pause_action.setEnabled(True)
             self._canvas_stop_action.setEnabled(True)
+            self._canvas_step_action.setEnabled(True)
+        self._sim_hold_reinit_pending = False
+        self._sync_stop_hold_actions_checked(False)
+        self._sync_pause_actions_checked(False)
         self._run_thread.start()
 
     def _on_simulation_pause(self) -> None:
+        if self._sim_hold_reinit_pending:
+            self.statusBar().showMessage("Simulation hold active. Pause has no effect.")
+            return
         if not self._simulation_running or self._simulation_paused:
             return
         if self._run_worker is not None:
             self._run_worker.request_pause()
         self._simulation_paused = True
+        self._sim_steps_remaining = 0
         self.pause_action.setEnabled(False)
         if hasattr(self, "_canvas_pause_action"):
             self._canvas_pause_action.setEnabled(False)
+        self._sync_pause_actions_checked(True)
         self._sync_play_actions_checked(False)
+        self._set_stop_hold_actions_enabled(False)
         self.statusBar().showMessage("Simulation paused.")
 
     def _on_simulation_resume(self) -> None:
         if not self._simulation_running or not self._simulation_paused:
+            return
+        if self._sim_hold_reinit_pending:
+            self._sync_stop_hold_actions_checked(False)
+            self._sim_restart_after_hold_pending = True
+            if self._run_worker is not None:
+                self._run_worker.request_stop()
+            self.statusBar().showMessage("Re-initializing model for hold/resume...")
             return
         if self._run_worker is not None:
             self._run_worker.request_resume()
@@ -1381,21 +1744,31 @@ class MainWindow(QMainWindow):
         self.pause_action.setEnabled(True)
         if hasattr(self, "_canvas_pause_action"):
             self._canvas_pause_action.setEnabled(True)
+        self._sync_pause_actions_checked(False)
         self._sync_play_actions_checked(True)
+        if self.sim_mode_action.isChecked():
+            self._set_stop_hold_actions_enabled(self._stop_hold_actions_may_be_enabled())
         self.statusBar().showMessage("Simulation running.")
 
     def _on_simulation_stop(self) -> None:
         # Stop request is asynchronous; final UI/state reset happens in _on_worker_stopped.
         if self._run_worker is not None:
             self._run_worker.request_stop()
+        self._sim_steps_remaining = 0
+        self._sim_hold_reinit_pending = False
+        self._sim_restart_after_hold_pending = False
+        self._sync_stop_hold_actions_checked(False)
         self._simulation_paused = False
+        self._sync_pause_actions_checked(False)
         self.pause_action.setEnabled(False)
+        self._set_stop_hold_actions_enabled(False)
         if self.sim_mode_action.isChecked():
             self.stop_action.setEnabled(False)
             if (
                 hasattr(self, "_canvas_play_action")
                 and hasattr(self, "_canvas_pause_action")
                 and hasattr(self, "_canvas_stop_action")
+                and hasattr(self, "_canvas_stop_hold_action")
             ):
                 self._canvas_pause_action.setEnabled(False)
                 self._canvas_stop_action.setEnabled(False)
@@ -1428,12 +1801,23 @@ class MainWindow(QMainWindow):
         _EXP_LOG.error("simulation start failed: %s", message or "unknown")
         self._simulation_running = False
         self._simulation_paused = False
+        self._sim_steps_remaining = 0
+        self._sim_hold_reinit_pending = False
+        self._sim_restart_after_hold_pending = False
+        self._sync_stop_hold_actions_checked(False)
+        self._sync_pause_actions_checked(False)
         self.pause_action.setEnabled(False)
+        self.stop_action.setEnabled(False)
+        self._set_stop_hold_actions_enabled(False)
         if hasattr(self, "_canvas_pause_action"):
             self._canvas_pause_action.setEnabled(False)
+        if hasattr(self, "_canvas_stop_action"):
+            self._canvas_stop_action.setEnabled(False)
         self._sync_play_actions_checked(False)
 
     def _on_worker_tick(self, sim_time_s: float, value_by_name: object) -> None:
+        sim_time_total = self._sim_time_offset_s + float(sim_time_s)
+        self._sim_time_last_s = max(self._sim_time_last_s, sim_time_total)
         vars_map: dict[str, float] = {}
         fmu_map: dict[str, float] = {}
         if isinstance(value_by_name, dict) and "variables" in value_by_name:
@@ -1448,9 +1832,13 @@ class MainWindow(QMainWindow):
                 if isinstance(v, (int, float)) and not isinstance(v, bool)
             }
         self._refresh_variable_value_labels()
-        self._append_live_series_samples(value_by_name=vars_map, t_override=sim_time_s)
-        self._update_live_dataviewers(value_by_name=vars_map, t_override=sim_time_s)
+        self._append_live_series_samples(value_by_name=vars_map, t_override=sim_time_total)
+        self._update_live_dataviewers(value_by_name=vars_map, t_override=sim_time_total)
         self._update_fmu_debug_table(fmu_map)
+        if self._sim_steps_remaining > 0:
+            self._sim_steps_remaining -= 1
+            if self._sim_steps_remaining <= 0 and self._simulation_running and not self._simulation_paused:
+                self._on_simulation_pause()
 
     def _update_fmu_debug_table(self, fmu_map: dict[str, float]) -> None:
         tbl = getattr(self, "_fmu_debug_table", None)
@@ -1464,14 +1852,30 @@ class MainWindow(QMainWindow):
             tbl.setItem(i, 1, QTableWidgetItem(str(v)))
 
     def _on_worker_stopped(self) -> None:
+        if self._sim_restart_after_hold_pending:
+            self._sim_restart_after_hold_pending = False
+            self._simulation_running = False
+            self._simulation_paused = False
+            self._run_engine = None
+            self._try_start_simulation()
+            return
         self._simulation_running = False
         self._simulation_paused = False
         self._run_engine = None
+        self._sim_steps_remaining = 0
+        self._sim_hold_reinit_pending = False
+        self._sim_restart_after_hold_pending = False
+        self._sync_stop_hold_actions_checked(False)
+        self._sync_pause_actions_checked(False)
         self._refresh_variable_value_labels()
         self._variables_panel.refresh()
         self.pause_action.setEnabled(False)
+        self.stop_action.setEnabled(False)
+        self._set_stop_hold_actions_enabled(False)
         if hasattr(self, "_canvas_pause_action"):
             self._canvas_pause_action.setEnabled(False)
+        if hasattr(self, "_canvas_stop_action"):
+            self._canvas_stop_action.setEnabled(False)
         self._sync_play_actions_checked(False)
         self.statusBar().showMessage("Simulation stopped.")
         # In experiment mode, offer to record results when the Record action is checked.
@@ -1483,6 +1887,9 @@ class MainWindow(QMainWindow):
             self._maybe_save_recording_after_run()
 
     def _on_run_thread_finished(self) -> None:
+        sender_obj = self.sender()
+        if self._run_thread is not None and sender_obj is not self._run_thread:
+            return
         self._run_worker = None
         self._run_thread = None
 
@@ -1557,7 +1964,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Recording", f"Could not save recording:\n{exc}")
             return
 
-        # Erfolgreich gespeicherte Messung in der Measurements-Liste registrieren.
+        # Register a successfully saved recording in the Measurements list.
         self._register_recording_entry(out_path)
 
     def _register_recording_entry(self, path: Path) -> None:
@@ -1576,6 +1983,73 @@ class MainWindow(QMainWindow):
         name_item.setData(Qt.ItemDataRole.UserRole, str(path))
         table.setItem(0, 0, name_item)
         table.setItem(0, 1, time_item)
+
+    def _on_recordings_context_menu(self, pos) -> None:
+        table = self._recordings_table
+        if table is None:
+            return
+        idx = table.indexAt(pos)
+        if not idx.isValid():
+            return
+        row = idx.row()
+        name_item = table.item(row, 0)
+        if name_item is None:
+            return
+        raw = name_item.data(Qt.ItemDataRole.UserRole)
+        path_str = str(raw).strip() if isinstance(raw, str) else ""
+        menu = QMenu(self)
+        # Two actions: list-only remove vs. delete file on disk.
+        act_list_only = QAction("Remove from list only", self)
+        act_list_only.triggered.connect(lambda _checked=False, r=row: self._recordings_remove_row(r, delete_file=False))
+        menu.addAction(act_list_only)
+        menu.addSeparator()
+        act_delete_disk = QAction("Delete file from disk…", self)
+        act_delete_disk.setEnabled(bool(path_str))
+        act_delete_disk.setToolTip(
+            "Deletes the file on disk and removes the entry from the list."
+            if path_str
+            else 'No saved file path — only "Remove from list only" is available.'
+        )
+        act_delete_disk.triggered.connect(lambda _checked=False, r=row: self._recordings_remove_row(r, delete_file=True))
+        menu.addAction(act_delete_disk)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _recordings_remove_row(self, row: int, *, delete_file: bool) -> None:
+        table = self._recordings_table
+        if table is None or row < 0 or row >= table.rowCount():
+            return
+        name_item = table.item(row, 0)
+        path_str = ""
+        if name_item is not None:
+            raw = name_item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(raw, str):
+                path_str = raw.strip()
+        if delete_file:
+            if not path_str:
+                return
+            p = Path(path_str)
+            reply = QMessageBox.question(
+                self,
+                "Delete file",
+                f"Delete this file from disk?\n\n{p.name}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                if p.is_file():
+                    p.unlink()
+                    _EXP_LOG.info("recording: deleted file %s", p)
+                elif p.exists():
+                    QMessageBox.warning(self, "Delete file", f"Not a regular file:\n{p}")
+                    return
+                else:
+                    _EXP_LOG.info("recording: file already missing, removing list entry %s", p)
+            except OSError as exc:
+                QMessageBox.warning(self, "Delete file", f"The file could not be deleted:\n{exc}")
+                return
+        table.removeRow(row)
 
     def _save_recording_to_path(self, path: Path, fmt: str) -> None:
         if self._record_series_buffers:
@@ -1696,6 +2170,39 @@ class MainWindow(QMainWindow):
         h = shlex.quote(dv.hash_name)
         self._run_protocol_lines_as_console([f"set {h}.open_widget true"])
 
+    def _close_live_dataviewers_for_sim_mode_exit(self) -> None:
+        """Remember open live DataViewer dialogs and close them when leaving experiment mode."""
+        if not self._live_dataviewers:
+            self._live_dataviewers_reopen_after_sim.clear()
+            return
+        self._live_dataviewers_reopen_after_sim = sorted(self._live_dataviewers.keys())
+        for w in list(self._live_dataviewers.values()):
+            try:
+                w.close()
+            except RuntimeError:
+                continue
+
+    def _reopen_live_dataviewers_after_sim_mode_enter(self) -> None:
+        """Reopen DataViewer windows that were auto-closed when experiment mode was left."""
+        ids = list(self._live_dataviewers_reopen_after_sim)
+        self._live_dataviewers_reopen_after_sim.clear()
+        for vid in ids:
+            if vid in self._live_dataviewers:
+                continue
+            dv = self._dataviewer_model_instance_for_id(vid)
+            if dv is None:
+                continue
+            self._open_live_dataviewer_dialog(dv)
+
+    def _dataviewer_model_instance_for_id(self, vid: int) -> DataViewer | None:
+        for dv in self._controller.model.iter_dataviewers():
+            try:
+                if int(dv.get("dataviewer_id")) == int(vid):
+                    return dv
+            except Exception:
+                continue
+        return None
+
     def _flush_dataviewer_open_widget_from_model(self) -> None:
         """If core marked ``open_widget`` true, open/focus the dialog and clear the flag (no extra CCP line)."""
         for dv in self._controller.model.iter_dataviewers():
@@ -1755,6 +2262,7 @@ class MainWindow(QMainWindow):
             mode="dynamic",
             legend_visible_at_start=True,
         )
+        self._attach_canvas_runtime_actions_to_dynamic_dataviewer(shell)
         shell.viewer.recording_saved.connect(
             lambda path_str: self._register_recording_entry(Path(path_str))
         )
@@ -1786,6 +2294,48 @@ class MainWindow(QMainWindow):
         dlg._dv_shell = shell  # type: ignore[attr-defined]
         dlg.resize(900, 480)
         dlg.show()
+
+    def _attach_canvas_runtime_actions_to_dynamic_dataviewer(self, shell: QWidget) -> None:
+        """Append canvas Record/Play/Stop actions to dynamic DataViewer toolbar."""
+        viewer = getattr(shell, "viewer", None)
+        if viewer is None:
+            return
+        add_group = getattr(viewer, "add_toolbar_action_group", None)
+        if not callable(add_group):
+            return
+        if not (
+            hasattr(self, "_canvas_record_action")
+            and hasattr(self, "_canvas_play_action")
+            and hasattr(self, "_canvas_pause_action")
+            and hasattr(self, "_canvas_stop_action")
+            and hasattr(self, "_canvas_stop_hold_action")
+            and hasattr(self, "_canvas_step_action")
+        ):
+            return
+
+        dv_step_count_action = self._create_step_count_widget_action(
+            viewer, expand_in_toolbar_slot=False
+        )
+        # Extra spacing before Studio runtime controls, so they appear as an extra group.
+        add_group(
+            "studio-runtime",
+            [
+                self._canvas_play_action,
+                self._canvas_pause_action,
+                self._canvas_stop_hold_action,
+                self._canvas_stop_action,
+                self._canvas_step_action,
+                dv_step_count_action,
+            ],
+            separator=True,
+            spacing_px=12,
+        )
+        add_group(
+            "studio-runtime-record",
+            [self._canvas_record_action],
+            separator=True,
+            spacing_px=8,
+        )
 
     def _bound_variables_for_dataviewer_id(self, vid: int) -> list[Variable]:
         vars_for_viewer: list[Variable] = []
@@ -1971,19 +2521,9 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     _EXP_LOG.debug("live-dv append failed for %s: %s", name, exc)
                     continue
-
-        # Regelmäßig autoscalen (insb. direkt nach Start/bei großen Sprüngen), damit Kurven sichtbar bleiben.
+        # Keep axis handling fully inside the scope widget's live update path.
+        # Periodic explicit auto_range() caused visible jumps/flicker during simulation.
         self._live_viewer_autorange_tick += 1
-        if self._live_viewer_autorange_tick % 10 == 0:
-            for sh in shells:
-                viewer = getattr(sh, "viewer", None)
-                scope = getattr(viewer, "_scope", None) if viewer is not None else None
-                if scope is None:
-                    continue
-                try:
-                    scope.auto_range()
-                except Exception:
-                    continue
 
     @staticmethod
     def _format_orthogonal_bends_csv(bends: list[float]) -> str:
@@ -2264,7 +2804,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        table = QTableWidget(0, 2, widget)
+        table = _RecordingsTable(widget)
         table.setHorizontalHeaderLabels(["File name", "Saved at"])
         header = table.horizontalHeader()
         header.setVisible(True)
@@ -2289,6 +2829,8 @@ class MainWindow(QMainWindow):
             f"QTableWidget::item:selected {{ background-color: {SELECTION_HIGHLIGHT}; color: {SELECTION_HIGHLIGHT_TEXT}; }}"
         )
         table.cellDoubleClicked.connect(self._on_recording_cell_double_clicked)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._on_recordings_context_menu)
 
         layout.addWidget(table, 1)
 
