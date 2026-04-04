@@ -15,7 +15,7 @@ mit "v0.0." beginnt – unabhängig von --prerelease hier.
 Beispiele:
   set GITHUB_TOKEN=ghp_...
   python scripts/trigger_github_release.py v0.0.18 --prerelease
-  python scripts/trigger_github_release.py v0.1.16 --push-dev
+  python scripts/trigger_github_release.py v0.0.31 --push-dev
 """
 
 from __future__ import annotations
