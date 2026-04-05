@@ -118,6 +118,7 @@ ERROR_COLOR = "#FF6666"
 
 _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
+_MW_LOG = logging.getLogger("synarius_studio.main_window")
 
 
 def _studio_library_catalog() -> LibraryCatalog:
@@ -534,6 +535,10 @@ class MainWindow(QMainWindow):
         self.resize(1200, 750)
         # Avoid studio_library_extra_roots() here: iterdir() on %LOCALAPPDATA%/Synarius/Lib can block
         # (network/cloud path) while the splash is still the only visible UI.
+        _MW_LOG.info(
+            "MainWindow __init__: build_marker=ctlr_catalog_tryexcept title_version=%s",
+            __version__,
+        )
         self._controller = MinimalController(
             library_catalog=_studio_library_catalog(),
             plugin_registry=_studio_plugin_registry(),

@@ -8,17 +8,61 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen, QStyleFactory
 
-from .main_window import MainWindow
 from .resource_paths import studio_icon_path, studio_splash_path
 
 
+def _apply_core_defer_initial_load_shim() -> None:
+    """Retry ``__init__`` without ``defer_initial_load`` when older synarius-core omits that parameter.
+
+    Frozen bundles may still ship an older ``main_window`` that passes the keyword; this patches
+    the core classes before :class:`~synarius_studio.main_window.MainWindow` is imported.
+    """
+
+    def _wrap(cls: type) -> None:
+        _orig = cls.__init__
+
+        def _patched(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            try:
+                return _orig(self, *args, **kwargs)
+            except TypeError as exc:
+                if "defer_initial_load" not in str(exc):
+                    raise
+                kwargs = dict(kwargs)
+                kwargs.pop("defer_initial_load", None)
+                return _orig(self, *args, **kwargs)
+
+        cls.__init__ = _patched  # type: ignore[method-assign]
+
+    try:
+        from synarius_core.library import LibraryCatalog
+
+        _wrap(LibraryCatalog)
+    except Exception:
+        pass
+    try:
+        from synarius_core.plugins.registry import PluginRegistry
+
+        _wrap(PluginRegistry)
+    except Exception:
+        pass
+
+
 def run(argv: Sequence[str] | None = None) -> int:
+    import logging
     import sys
 
-    from .app_logging import configure_file_logging
+    from .app_logging import configure_file_logging, main_log_path
 
     args = list(argv) if argv is not None else list(sys.argv)
     configure_file_logging()
+    _log_path = main_log_path()
+    if _log_path is not None:
+        print(f"Synarius Studio log file: {_log_path.resolve()}", file=sys.stderr, flush=True)
+        logging.getLogger("synarius_studio.bootstrap").info("Log file path (also printed to stderr): %s", _log_path)
+
+    _apply_core_defer_initial_load_shim()
+    logging.getLogger("synarius_studio.bootstrap").debug("Core defer_initial_load shim applied (LibraryCatalog, PluginRegistry)")
+
     if ("--smoke-exit" in args) or bool(os.environ.get("SYNARIUS_STUDIO_SMOKE_EXIT")):
         return 0
 
@@ -79,6 +123,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             splash = QSplashScreen(scaled, Qt.WindowType.WindowStaysOnTopHint)
             splash.show()
             app.processEvents()
+
+    from .main_window import MainWindow
 
     window = MainWindow()
     window.showMaximized()
