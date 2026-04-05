@@ -55,13 +55,26 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     args = list(argv) if argv is not None else list(sys.argv)
     configure_file_logging()
+    try:
+        from ._version import __version__ as _studio_ver
+    except Exception:
+        _studio_ver = "unknown"
     _log_path = main_log_path()
+    _bootstrap = logging.getLogger("synarius_studio.bootstrap")
+    # One INFO line right after the rotating file is ready — easy to spot at the tail of an append-only log.
+    _bootstrap.info(
+        "session_start version=%s log_file=%s build_marker=defer_kw_shim",
+        _studio_ver,
+        str(_log_path.resolve()) if _log_path is not None else "",
+    )
     if _log_path is not None:
-        print(f"Synarius Studio log file: {_log_path.resolve()}", file=sys.stderr, flush=True)
-        logging.getLogger("synarius_studio.bootstrap").info("Log file path (also printed to stderr): %s", _log_path)
+        print(
+            f"Synarius Studio {_studio_ver} | log file: {_log_path.resolve()}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     _apply_core_defer_initial_load_shim()
-    logging.getLogger("synarius_studio.bootstrap").debug("Core defer_initial_load shim applied (LibraryCatalog, PluginRegistry)")
 
     if ("--smoke-exit" in args) or bool(os.environ.get("SYNARIUS_STUDIO_SMOKE_EXIT")):
         return 0
