@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -118,6 +119,49 @@ ERROR_COLOR = "#FF6666"
 
 _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
+
+
+def _studio_library_catalog() -> LibraryCatalog:
+    """Defer heavy library scan when supported; tolerate older synarius-core without ``defer_initial_load``."""
+    # #region agent log
+    def _agent_log(msg: str, data: dict, hypothesis_id: str = "H1") -> None:
+        payload = {
+            "sessionId": "1fd6ec",
+            "hypothesisId": hypothesis_id,
+            "location": "main_window.py:_studio_library_catalog",
+            "message": msg,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        for _base in (Path.cwd(), Path(__file__).resolve().parents[3]):
+            try:
+                with (_base / "debug-1fd6ec.log").open("a", encoding="utf-8") as _lf:
+                    _lf.write(json.dumps(payload) + "\n")
+                return
+            except OSError:
+                continue
+
+    try:
+        import inspect as _insp
+
+        _pnames = list(_insp.signature(LibraryCatalog.__init__).parameters.keys())
+    except Exception as _sig_e:
+        _pnames = [repr(_sig_e)]
+    _agent_log("LibraryCatalog.__init__ parameters at runtime", {"param_names": _pnames})
+    # #endregion
+    try:
+        cat = LibraryCatalog(extra_roots=(), defer_initial_load=True)
+        # #region agent log
+        _agent_log("LibraryCatalog constructed", {"branch": "defer_initial_load"})
+        # #endregion
+        return cat
+    except TypeError:
+        cat = LibraryCatalog(extra_roots=())
+        # #region agent log
+        _agent_log("LibraryCatalog constructed", {"branch": "compat_without_defer"})
+        # #endregion
+        return cat
+
 
 # Internal drag-and-drop for Measurements list row reordering.
 RECORDINGS_ROW_DRAG_MIME = "application/x-synarius-studio-recordings-row"
@@ -518,7 +562,7 @@ class MainWindow(QMainWindow):
         # Avoid studio_library_extra_roots() here: iterdir() on %LOCALAPPDATA%/Synarius/Lib can block
         # (network/cloud path) while the splash is still the only visible UI.
         self._controller = MinimalController(
-            library_catalog=LibraryCatalog(extra_roots=(), defer_initial_load=True),
+            library_catalog=_studio_library_catalog(),
             plugin_registry=PluginRegistry(
                 extra_plugin_containers=(),
                 defer_initial_load=True,
