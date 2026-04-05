@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import inspect
 import logging
 import re
 import shlex
@@ -121,46 +121,25 @@ _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
 
 
+def _init_has_param(cls: type, name: str) -> bool:
+    try:
+        return name in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _studio_library_catalog() -> LibraryCatalog:
     """Defer heavy library scan when supported; tolerate older synarius-core without ``defer_initial_load``."""
-    # #region agent log
-    def _agent_log(msg: str, data: dict, hypothesis_id: str = "H1") -> None:
-        payload = {
-            "sessionId": "1fd6ec",
-            "hypothesisId": hypothesis_id,
-            "location": "main_window.py:_studio_library_catalog",
-            "message": msg,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        for _base in (Path.cwd(), Path(__file__).resolve().parents[3]):
-            try:
-                with (_base / "debug-1fd6ec.log").open("a", encoding="utf-8") as _lf:
-                    _lf.write(json.dumps(payload) + "\n")
-                return
-            except OSError:
-                continue
+    if _init_has_param(LibraryCatalog, "defer_initial_load"):
+        return LibraryCatalog(extra_roots=(), defer_initial_load=True)
+    return LibraryCatalog(extra_roots=())
 
-    try:
-        import inspect as _insp
 
-        _pnames = list(_insp.signature(LibraryCatalog.__init__).parameters.keys())
-    except Exception as _sig_e:
-        _pnames = [repr(_sig_e)]
-    _agent_log("LibraryCatalog.__init__ parameters at runtime", {"param_names": _pnames})
-    # #endregion
-    try:
-        cat = LibraryCatalog(extra_roots=(), defer_initial_load=True)
-        # #region agent log
-        _agent_log("LibraryCatalog constructed", {"branch": "defer_initial_load"})
-        # #endregion
-        return cat
-    except TypeError:
-        cat = LibraryCatalog(extra_roots=())
-        # #region agent log
-        _agent_log("LibraryCatalog constructed", {"branch": "compat_without_defer"})
-        # #endregion
-        return cat
+def _studio_plugin_registry() -> PluginRegistry:
+    """Optional ``defer_initial_load`` when supported (older synarius-core omits it)."""
+    if _init_has_param(PluginRegistry, "defer_initial_load"):
+        return PluginRegistry(extra_plugin_containers=(), defer_initial_load=True)
+    return PluginRegistry(extra_plugin_containers=())
 
 
 # Internal drag-and-drop for Measurements list row reordering.
@@ -563,10 +542,7 @@ class MainWindow(QMainWindow):
         # (network/cloud path) while the splash is still the only visible UI.
         self._controller = MinimalController(
             library_catalog=_studio_library_catalog(),
-            plugin_registry=PluginRegistry(
-                extra_plugin_containers=(),
-                defer_initial_load=True,
-            ),
+            plugin_registry=_studio_plugin_registry(),
         )
         self._history = _History()
         self._default_output_color = DEFAULT_OUTPUT_COLOR
