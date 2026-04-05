@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import logging
 import re
 import shlex
@@ -121,25 +120,20 @@ _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
 
 
-def _init_has_param(cls: type, name: str) -> bool:
-    try:
-        return name in inspect.signature(cls.__init__).parameters
-    except (TypeError, ValueError):
-        return False
-
-
 def _studio_library_catalog() -> LibraryCatalog:
     """Defer heavy library scan when supported; tolerate older synarius-core without ``defer_initial_load``."""
-    if _init_has_param(LibraryCatalog, "defer_initial_load"):
+    try:
         return LibraryCatalog(extra_roots=(), defer_initial_load=True)
-    return LibraryCatalog(extra_roots=())
+    except TypeError:
+        return LibraryCatalog(extra_roots=())
 
 
 def _studio_plugin_registry() -> PluginRegistry:
     """Optional ``defer_initial_load`` when supported (older synarius-core omits it)."""
-    if _init_has_param(PluginRegistry, "defer_initial_load"):
+    try:
         return PluginRegistry(extra_plugin_containers=(), defer_initial_load=True)
-    return PluginRegistry(extra_plugin_containers=())
+    except TypeError:
+        return PluginRegistry(extra_plugin_containers=())
 
 
 # Internal drag-and-drop for Measurements list row reordering.
