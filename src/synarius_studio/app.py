@@ -51,6 +51,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     import logging
     import sys
 
+    from synarius_apps_diagnostics import log_session_start
+
     from .app_logging import configure_file_logging, main_log_path
 
     args = list(argv) if argv is not None else list(sys.argv)
@@ -60,13 +62,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     except Exception:
         _studio_ver = "unknown"
     _log_path = main_log_path()
-    _bootstrap = logging.getLogger("synarius_studio.bootstrap")
-    # One INFO line right after the rotating file is ready — easy to spot at the tail of an append-only log.
-    _bootstrap.info(
-        "session_start version=%s log_file=%s build_marker=defer_kw_shim",
-        _studio_ver,
-        str(_log_path.resolve()) if _log_path is not None else "",
-    )
+    log_session_start(logger_name="synarius_studio.bootstrap", app_name="Synarius Studio", version=_studio_ver)
+    logging.getLogger("synarius_studio.bootstrap").info("build_marker=defer_kw_shim")
     if _log_path is not None:
         print(
             f"Synarius Studio {_studio_ver} | log file: {_log_path.resolve()}",

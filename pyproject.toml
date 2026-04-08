@@ -7,16 +7,19 @@ name = "synarius-studio"
 version = "0.0.36"
 description = "PySide6 GUI for Synarius."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Synarius Contributors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
   "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
   "PySide6>=6.0.0",
   "platformdirs>=4.0.0",
+  # Shared file logging / excepthook / Qt message handler (sibling: pip install -e ../synarius-apps).
+  "synarius-apps @ git+https://github.com/synarius-project/synarius-apps.git",
   # Parameters repository (synarius_core.parameters) uses DuckDB; pin here so Studio venv
   # always has it even if the pinned synarius-core git revision predates this dependency.
   "duckdb>=1.5.1",

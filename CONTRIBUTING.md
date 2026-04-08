@@ -34,24 +34,20 @@ You can contribute by:
 
 ## Development Guidelines
 
+**Canonical programming guidelines** (Python 3.11, repository boundaries, code style, testing, pull requests) are maintained in the **[Synarius programming guidelines](https://synarius-project.github.io/synarius-guidelines/programming_guidelines.html)** (Sphinx documentation built from [synarius-guidelines](https://github.com/synarius-project/synarius-guidelines)). Follow that document first; the sections below only add repository-specific reminders.
+
 ### Architecture
 
-Synarius is split into two main components:
+Synarius is split into separate repositories:
 
-- **synarius-core**: simulation engine (no GUI dependencies)
-- **synarius-studio**: graphical user interface
+- **synarius-core**: simulation engine and GUI-less backend (no PySide/Qt dependency).
+- **synarius-apps**: DataViewer, ParaWiz, and shared Qt tools — depends on core; usable **without** Synarius Studio.
+- **synarius-studio**: graphical modeling and simulation IDE (PySide6).
 
 **Important:**
 
 - Core must remain independent from the GUI
 - All simulation logic belongs in synarius-core
-
-### Code Style
-
-- Follow PEP 8
-- Keep functions small and focused
-- Prefer explicit over implicit behavior
-- Add docstrings where appropriate
 
 ### Icons (Synarius Studio)
 

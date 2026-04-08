@@ -4,6 +4,10 @@
 
 Graphical simulation tool with a PySide6 GUI for Synarius.
 
+**Python 3.11.x** is required (see `requires-python` in `pyproject.toml`).
+
+**Contributing:** follow the **[Synarius programming guidelines](https://synarius-project.github.io/synarius-guidelines/programming_guidelines.html)** (HTML) and this repository’s **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
 ![Synarius Studio — diagram canvas, library, and console](docs/images/SynariusStudio.png)
 
 ## Try out!
@@ -50,6 +54,13 @@ SN Studio is responsible for:
 - Support for DCM and HDF5 files (optional: other formats like par [CANape], ASAM CDF/CDFX, CSV).
 
 ## Develop / Run (minimal)
+
+For monorepo development, install `synarius-apps` editable as well, because Studio reuses shared UI components
+from that package (e.g. dataviewer integration, terminal console widget):
+
+```bash
+pip install -e ../synarius-apps
+```
 
 ```bash
 run-synarius-studio

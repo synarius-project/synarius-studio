@@ -18,13 +18,10 @@ from PySide6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QIcon,
-    QKeyEvent,
     QKeySequence,
     QPainter,
     QPixmap,
     QShowEvent,
-    QTextCharFormat,
-    QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,7 +41,6 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -72,6 +68,7 @@ from synarius_core.model import (
 )
 from synarius_core.plugins.registry import PluginRegistry
 from synarius_core.recording import export_recording_buffers
+from synariustools.tools.terminal_console import TerminalConsoleWidget
 
 from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, build_resources_panel
 from .theme import (
@@ -167,98 +164,7 @@ class _History:
         return self.entries[self.index]
 
 
-class _TerminalConsole(QTextEdit):
-    def __init__(self, on_submit, on_prev, on_next, parent: QWidget | None = None):
-        super().__init__(parent)
-        self._on_submit = on_submit
-        self._on_prev = on_prev
-        self._on_next = on_next
-        self._input_start = 0
-        self._prompt_line_start = 0
-        self.setAcceptRichText(False)
-
-    def _insert_colored(self, text: str, color: str) -> None:
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.setTextCursor(cursor)
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        cursor.mergeCharFormat(fmt)
-        cursor.insertText(text)
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-
-    def append_output(self, text: str, color: str) -> None:
-        self._insert_colored(f"{text}\n", color)
-
-    def show_prompt(self, prompt: str, color: str) -> None:
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.setTextCursor(cursor)
-        self._prompt_line_start = cursor.position()
-        self._insert_colored(prompt, color)
-        self._input_start = self.textCursor().position()
-        # Keep user-typed command text white, matching terminal UX.
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(DEFAULT_INPUT_COLOR))
-        self.setCurrentCharFormat(fmt)
-
-    def insert_log_before_current_prompt(self, text: str, color: str) -> None:
-        """Insert a protocol echo line above the active prompt without breaking in-progress input."""
-        cursor = QTextCursor(self.document())
-        cursor.beginEditBlock()
-        cursor.setPosition(self._prompt_line_start)
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        cursor.setCharFormat(fmt)
-        cursor.insertText(f"{text}\n")
-        cursor.endEditBlock()
-        delta = len(text) + 1
-        self._prompt_line_start += delta
-        self._input_start += delta
-        end = self.textCursor()
-        end.movePosition(QTextCursor.MoveOperation.End)
-        self.setTextCursor(end)
-
-    def current_input(self) -> str:
-        return self.toPlainText()[self._input_start :]
-
-    def replace_current_input(self, text: str) -> None:
-        cursor = self.textCursor()
-        cursor.setPosition(self._input_start)
-        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
-        cursor.removeSelectedText()
-        cursor.insertText(text)
-        self.setTextCursor(cursor)
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        key = event.key()
-        cursor = self.textCursor()
-
-        if key == Qt.Key.Key_Up:
-            self._on_prev()
-            return
-        if key == Qt.Key.Key_Down:
-            self._on_next()
-            return
-        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            line = self.current_input()
-            self._insert_colored("\n", DEFAULT_OUTPUT_COLOR)
-            self._on_submit(line)
-            return
-        if key == Qt.Key.Key_Backspace and cursor.position() <= self._input_start:
-            return
-        if key == Qt.Key.Key_Left and cursor.position() <= self._input_start:
-            return
-        if key == Qt.Key.Key_Home:
-            cursor.setPosition(self._input_start)
-            self.setTextCursor(cursor)
-            return
-        if cursor.position() < self._input_start:
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self.setTextCursor(cursor)
-
-        super().keyPressEvent(event)
+_TerminalConsole = TerminalConsoleWidget
 
 
 class _SignalsMappingTable(QTableWidget):
