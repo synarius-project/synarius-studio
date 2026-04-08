@@ -111,5 +111,6 @@ def studio_toolbar_stylesheet(*, background_color: str | None = None) -> str:
         f"QToolBar QToolButton:pressed {{ background-color: {tb_pressed}; }}"
         f"QToolBar QToolButton:checked {{ background-color: {action_checked}; }}"
         f"QToolBar QToolButton:checked:hover {{ background-color: {action_checked}; }}"
+        f"QToolBar QToolButton::menu-indicator {{ image: none; width: 0px; height: 0px; }}"
         + studio_tooltip_stylesheet()
     )

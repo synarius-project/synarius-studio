@@ -328,7 +328,7 @@ class _RunLoopWorker(QObject):
         tick_interval_ms: int = 25,
         plugin_registry: PluginRegistry | None = None,
         model_directory: Path | str | None = None,
-        apply_fmu_params_on_init: bool = False,
+        apply_fmu_params_on_init: bool = True,
     ) -> None:
         super().__init__()
         self._model = model
@@ -1601,7 +1601,9 @@ class MainWindow(QMainWindow):
             tick_interval_ms=25,
             plugin_registry=self._controller.plugin_registry,
             model_directory=_md,
-            apply_fmu_params_on_init=preserve_series,
+            # Always apply diagram-sourced FMU parameters at init; must not depend on hold/series flags
+            # (previously tied to preserve_series, so a normal Play left defaults like g=-9.81 and ignored ±g).
+            apply_fmu_params_on_init=True,
         )
         self._run_worker.moveToThread(self._run_thread)
         self._run_thread.started.connect(self._run_worker.start)

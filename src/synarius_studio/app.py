@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen, QStyleFactory
 
@@ -139,10 +139,14 @@ def run(argv: Sequence[str] | None = None) -> int:
     window = MainWindow()
     window.showMaximized()
     if splash is not None:
-        # Close immediately after the main window is shown. MainWindow defers heavy
-        # plugin imports to the next event-loop tick so we do not block here for minutes
-        # with only the splash visible.
+        # MainWindow defers heavy plugin imports to the next event-loop tick so we do not
+        # block here for minutes with only the splash visible.
         app.processEvents()
-        splash.finish(window)
+        # Keep the splash on top for one second after the main window is visible.
+
+        def _finish_splash() -> None:
+            splash.finish(window)
+
+        QTimer.singleShot(1000, _finish_splash)
     return app.exec()
 

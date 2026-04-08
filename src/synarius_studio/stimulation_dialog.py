@@ -18,7 +18,7 @@ from synarius_core.model import Variable
 
 
 _STIM_LABELS = (
-    ("none", "None (use dataflow / value)"),
+    ("none", "None (constant = Variable value; synced with p0 below)"),
     ("constant", "Constant"),
     ("ramp", "Ramp"),
     ("sine", "Sine"),
@@ -89,7 +89,15 @@ class StimulationDialog(QDialog):
         kind = _safe_kind(v)
         idx = next((i for i in range(self._kind.count()) if self._kind.itemData(i) == kind), 0)
         self._kind.setCurrentIndex(idx)
-        self._p0.setValue(_safe_float(v, "stim_p0", 0.0))
+        if kind in ("none", "off", ""):
+            # Unstimulated: dataflow uses ``Variable.value``; older sessions only had stim_p0 in the log.
+            try:
+                base_v = float(v.value)
+            except (TypeError, ValueError):
+                base_v = _safe_float(v, "stim_p0", 0.0)
+            self._p0.setValue(base_v)
+        else:
+            self._p0.setValue(_safe_float(v, "stim_p0", 0.0))
         self._p1.setValue(_safe_float(v, "stim_p1", 1.0))
         self._p2.setValue(_safe_float(v, "stim_p2", 1.0))
         self._p3.setValue(_safe_float(v, "stim_p3", 0.0))
@@ -97,7 +105,7 @@ class StimulationDialog(QDialog):
     def _update_param_hints(self) -> None:
         k = self._kind.currentData()
         hints = {
-            "none": ("(unused)", "(unused)", "(unused)", "(unused)"),
+            "none": ("Value (written to Variable.value)", "(unused)", "(unused)", "(unused)"),
             "constant": ("Value", "(unused)", "(unused)", "(unused)"),
             "ramp": ("Offset", "Slope (per s)", "(unused)", "(unused)"),
             "sine": ("Offset", "Amplitude", "Frequency (Hz)", "Phase (deg)"),
@@ -112,6 +120,15 @@ class StimulationDialog(QDialog):
         h = shlex.quote(self._variable.hash_name)
         kind = str(self._kind.currentData())
         p0, p1, p2, p3 = self._p0.value(), self._p1.value(), self._p2.value(), self._p3.value()
+        if kind in ("none", "off"):
+            return [
+                f"set {h}.stim_kind {kind}",
+                f"set {h}.value {p0}",
+                f"set {h}.stim_p0 {p0}",
+                f"set {h}.stim_p1 {p1}",
+                f"set {h}.stim_p2 {p2}",
+                f"set {h}.stim_p3 {p3}",
+            ]
         return [
             f"set {h}.stim_kind {kind}",
             f"set {h}.stim_p0 {p0}",
