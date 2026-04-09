@@ -25,7 +25,7 @@ dependencies = [
   "duckdb>=1.5.1",
   # Core re-exports synarius_core.io (timeseries); that optional extra pulls numpy/pandas/pyarrow/asammdf.
   # Must match synarius-apps’ synarius-core pin (pip cannot install two git revs of one name).
-  "synarius-core[timeseries,fmu] @ git+https://github.com/synarius-project/synarius-core.git@8aaf0632f95d1b99c427de4b8efc145f19944604",
+  "synarius-core[timeseries,fmu] @ git+https://github.com/synarius-project/synarius-core.git@fe35643329e4c963f9dded8566f694ea3804287e",
 ]
 
 [project.scripts]
