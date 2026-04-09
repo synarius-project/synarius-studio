@@ -1,7 +1,10 @@
 import zerovm_sphinx_theme
 
 project = "synarius-studio"
-extensions = ["sphinx_needs"]
+extensions = [
+    "sphinx_needs",
+    "sphinxcontrib.plantuml",
+]
 html_theme = "zerovm"
 html_theme_path = [zerovm_sphinx_theme.theme_path]
 
