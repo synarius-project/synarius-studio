@@ -110,6 +110,7 @@ jobs:
           <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
             <Product Id="*" Name="synarius-studio" Language="1033" Version="$version" Manufacturer="Synarius Contributors" UpgradeCode="D43DD59A-0E89-4A83-AF7A-861F0E5C8427">
               <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+              <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." AllowSameVersionUpgrades="no" />
               <MediaTemplate EmbedCab="yes" />
               <WixVariable Id="WixUILicenseRtf" Value="disclaimer.rtf" />
               <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
@@ -181,9 +182,10 @@ jobs:
                             Name="synarius-studio"
                             Description="Start synarius-studio"
                             Target="[INSTALLFOLDER]synarius-studio.exe"
-                            WorkingDirectory="INSTALLFOLDER" />
+                            WorkingDirectory="INSTALLFOLDER"
+                            Icon="StudioAppIcon" />
                   <RemoveFolder Id="ApplicationProgramsFolderRemove" On="uninstall" />
-                  <RegistryValue Root="HKCU"
+                  <RegistryValue Root="HKLM"
                                  Key="Software\Synarius\synarius-studio"
                                  Name="StartMenuShortcut"
                                  Type="integer"
@@ -191,6 +193,9 @@ jobs:
                                  KeyPath="yes" />
                 </Component>
               </DirectoryRef>
+            </Fragment>
+            <Fragment>
+              <Icon Id="StudioAppIcon" SourceFile="dist\synarius-studio.exe" />
             </Fragment>
           </Wix>
           "@ | Out-File -Encoding UTF8 installer.wxs
