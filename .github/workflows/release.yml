@@ -185,7 +185,7 @@ jobs:
                             WorkingDirectory="INSTALLFOLDER"
                             Icon="StudioAppIcon" />
                   <RemoveFolder Id="ApplicationProgramsFolderRemove" On="uninstall" />
-                  <RegistryValue Root="HKLM"
+                  <RegistryValue Root="HKCU"
                                  Key="Software\Synarius\synarius-studio"
                                  Name="StartMenuShortcut"
                                  Type="integer"
