@@ -8,7 +8,19 @@ from dataclasses import dataclass, field
 from typing import Callable, cast
 from uuid import UUID
 import numpy as np
-from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QThread, QTimer, Signal as QtSignal, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QMimeData,
+    QObject,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal as QtSignal,
+    Slot,
+    QMetaObject,
+    Q_ARG,
+)
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -329,12 +341,18 @@ class _RunLoopWorker(QObject):
     start_failed = QtSignal(str)
     stopped = QtSignal()
 
+    #: Wall-clock seconds budget per timer callback when not in realtime pacing (best-effort max speed).
+    _MAX_RATE_WALL_BUDGET_S = 0.05
+    #: Safety cap on steps per timer callback in max-rate mode.
+    _MAX_RATE_STEP_CAP = 100_000
+
     def __init__(
         self,
         model,
         *,
         dt_s: float = 0.02,
-        tick_interval_ms: int = 25,
+        tick_interval_ms: int | None = None,
+        realtime_pacing: bool = True,
         plugin_registry: PluginRegistry | None = None,
         model_directory: Path | str | None = None,
         apply_fmu_params_on_init: bool = True,
@@ -342,7 +360,8 @@ class _RunLoopWorker(QObject):
         super().__init__()
         self._model = model
         self._dt_s = float(dt_s)
-        self._tick_interval_ms = int(tick_interval_ms)
+        self._explicit_tick_interval_ms = tick_interval_ms
+        self._realtime_pacing = bool(realtime_pacing)
         self._plugin_registry = plugin_registry
         self._model_directory = model_directory
         self._apply_fmu_params_on_init = bool(apply_fmu_params_on_init)
@@ -351,6 +370,27 @@ class _RunLoopWorker(QObject):
         self._stop_requested = False
         self._paused = False
         self._diag_emit_idx = 0
+
+    def _effective_tick_interval_ms(self) -> int:
+        """QTimer interval: 0 = fire as fast as the event loop allows (max-rate mode)."""
+        if not self._realtime_pacing:
+            return 0
+        if self._explicit_tick_interval_ms is not None:
+            return max(1, int(self._explicit_tick_interval_ms))
+        return max(1, int(round(self._dt_s * 1000.0)))
+
+    def _apply_pacing_option(self) -> None:
+        if self._engine is None:
+            return
+        self._engine.context.options["simulation_pacing"] = "realtime" if self._realtime_pacing else "max_rate"
+
+    @Slot(bool)
+    def set_realtime_pacing(self, enabled: bool) -> None:
+        """Toggle wall-clock-aligned steps vs. best-effort maximum simulation throughput."""
+        self._realtime_pacing = bool(enabled)
+        self._apply_pacing_option()
+        if self._timer is not None:
+            self._timer.setInterval(self._effective_tick_interval_ms())
 
     @Slot()
     def start(self) -> None:
@@ -370,10 +410,11 @@ class _RunLoopWorker(QObject):
                 self.start_failed.emit("Cannot simulate: invalid dataflow (e.g. cycle).")  # type: ignore[attr-defined]
                 self.stopped.emit()  # type: ignore[attr-defined]
                 return
+            self._apply_pacing_option()
             self._stop_requested = False
             self._paused = False
             self._timer = QTimer(self)
-            self._timer.setInterval(self._tick_interval_ms)
+            self._timer.setInterval(self._effective_tick_interval_ms())
             self._timer.timeout.connect(self._on_tick)
             self._timer.start()
             self.started_ok.emit()  # type: ignore[attr-defined]
@@ -393,6 +434,43 @@ class _RunLoopWorker(QObject):
     def request_resume(self) -> None:
         self._paused = False
 
+    def _flush_new_diagnostics(self) -> None:
+        if self._engine is None:
+            return
+        diags = list(getattr(self._engine.context, "diagnostics", []) or [])
+        if self._diag_emit_idx < len(diags):
+            for line in diags[self._diag_emit_idx :]:
+                _EXP_LOG.error("%s", str(line))
+            self._diag_emit_idx = len(diags)
+
+    def _emit_tick_payload(self) -> None:
+        if self._engine is None:
+            return
+        values: dict[str, float] = {}
+        for node in self._model.iter_objects():
+            if not isinstance(node, Variable):
+                continue
+            val = node.value
+            if isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, bool):
+                values[str(node.name)] = float(val)
+        fmu_ws: dict[str, float] = {}
+        compiled = self._engine.context.artifacts.get("dataflow")
+        ws = self._engine.context.scalar_workspace
+        if compiled is not None and ws is not None:
+            node_by_id = getattr(compiled, "node_by_id", None)
+            if isinstance(node_by_id, dict):
+                for uid, node in node_by_id.items():
+                    if not isinstance(node, ElementaryInstance) or not elementary_has_fmu_path(node):
+                        continue
+                    raw = ws.get(uid, 0.0)
+                    try:
+                        fv = float(raw)
+                    except (TypeError, ValueError):
+                        fv = float("nan")
+                    fmu_ws[str(node.name)] = fv
+        payload = {"variables": values, "fmu_workspace": fmu_ws}
+        self.tick.emit(float(self._engine.context.time_s), payload)  # type: ignore[attr-defined]
+
     @Slot()
     def _on_tick(self) -> None:
         if self._stop_requested:
@@ -406,36 +484,21 @@ class _RunLoopWorker(QObject):
             self.stopped.emit()  # type: ignore[attr-defined]
             return
         try:
-            self._engine.step()
-            diags = list(getattr(self._engine.context, "diagnostics", []) or [])
-            if self._diag_emit_idx < len(diags):
-                for line in diags[self._diag_emit_idx :]:
-                    _EXP_LOG.error("%s", str(line))
-                self._diag_emit_idx = len(diags)
-            values: dict[str, float] = {}
-            for node in self._model.iter_objects():
-                if not isinstance(node, Variable):
-                    continue
-                val = node.value
-                if isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, bool):
-                    values[str(node.name)] = float(val)
-            fmu_ws: dict[str, float] = {}
-            compiled = self._engine.context.artifacts.get("dataflow")
-            ws = self._engine.context.scalar_workspace
-            if compiled is not None and ws is not None:
-                node_by_id = getattr(compiled, "node_by_id", None)
-                if isinstance(node_by_id, dict):
-                    for uid, node in node_by_id.items():
-                        if not isinstance(node, ElementaryInstance) or not elementary_has_fmu_path(node):
-                            continue
-                        raw = ws.get(uid, 0.0)
-                        try:
-                            fv = float(raw)
-                        except (TypeError, ValueError):
-                            fv = float("nan")
-                        fmu_ws[str(node.name)] = fv
-            payload = {"variables": values, "fmu_workspace": fmu_ws}
-            self.tick.emit(float(self._engine.context.time_s), payload)  # type: ignore[attr-defined]
+            if self._realtime_pacing:
+                self._engine.step()
+                self._flush_new_diagnostics()
+                self._emit_tick_payload()
+                return
+
+            t0 = time.perf_counter()
+            n = 0
+            while n < self._MAX_RATE_STEP_CAP and (time.perf_counter() - t0) < self._MAX_RATE_WALL_BUDGET_S:
+                if self._stop_requested or self._paused:
+                    break
+                self._engine.step()
+                n += 1
+            self._flush_new_diagnostics()
+            self._emit_tick_payload()
         except Exception:
             self.stopped.emit()  # type: ignore[attr-defined]
 
@@ -963,7 +1026,27 @@ class MainWindow(QMainWindow):
             self._canvas_record_action.setIcon(QIcon(str(rec_icon_path)))
         self._canvas_record_action.setVisible(False)
 
+        self._canvas_realtime_action = QAction(self)
+        self._canvas_realtime_action.setCheckable(True)
+        self._canvas_realtime_action.setChecked(True)
+        self._canvas_realtime_action.setToolTip(
+            "Realtime pacing: one model step per wall-clock tick aligned to the step size (default 20 ms). "
+            "Turn off to advance simulation as fast as the CPU allows (UI updates once per burst)."
+        )
+        _rt_icon = self._icons_dir / "chronometer-stopwatch.svg"
+        if _rt_icon.exists():
+            self._canvas_realtime_action.setIcon(
+                icon_from_tinted_svg_file(
+                    _rt_icon,
+                    QColor(STUDIO_TOOLBAR_FOREGROUND),
+                    logical_side=int(self._diagram_palette_icon_px),
+                )
+            )
+        self._canvas_realtime_action.setVisible(False)
+        self._canvas_realtime_action.toggled.connect(self._on_canvas_realtime_pacing_toggled)
+
         self._diagram_palette_toolbar.addSeparator()
+        self._diagram_palette_toolbar.addAction(self._canvas_realtime_action)
         self._diagram_palette_toolbar.addAction(self._canvas_play_action)
         self._diagram_palette_toolbar.addAction(self._canvas_pause_action)
         self._diagram_palette_toolbar.addAction(self._canvas_stop_hold_action)
@@ -1050,6 +1133,17 @@ class MainWindow(QMainWindow):
         w = self._canvas_center_tabs.widget(index)
         if w in (self._fmfl_code_view, self._python_code_view):
             self._canvas_center_tabs.removeTab(index)
+
+    def _on_canvas_realtime_pacing_toggled(self, checked: bool) -> None:
+        w = self._run_worker
+        if w is None:
+            return
+        QMetaObject.invokeMethod(
+            w,
+            "set_realtime_pacing",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(bool, bool(checked)),
+        )
 
     def _ensure_experiment_code_tabs(self) -> None:
         """FMFL- und Python-Tab nur im Experimentiermodus; Inhalt via :meth:`_refresh_experiment_codegen_views`."""
@@ -1382,6 +1476,7 @@ class MainWindow(QMainWindow):
             and hasattr(self, "_canvas_step_action")
             and hasattr(self, "_canvas_step_count_action")
             and hasattr(self, "_canvas_record_action")
+            and hasattr(self, "_canvas_realtime_action")
         ):
             self._canvas_play_action.setVisible(on)
             self._canvas_pause_action.setVisible(on)
@@ -1390,12 +1485,14 @@ class MainWindow(QMainWindow):
             self._canvas_step_action.setVisible(on)
             self._canvas_step_count_action.setVisible(on)
             self._canvas_record_action.setVisible(on)
+            self._canvas_realtime_action.setVisible(on)
             self._canvas_play_action.setEnabled(on)
             self._canvas_pause_action.setEnabled(pause_may)
             self._canvas_stop_action.setEnabled(on and self._simulation_running)
             self._canvas_step_action.setEnabled(on)
             self._canvas_step_count_action.setEnabled(on)
             self._canvas_record_action.setEnabled(on)
+            self._canvas_realtime_action.setEnabled(on)
         self.statusBar().showMessage("Simulation mode" if on else "Ready.")
         for tb in (self._main_toolbar, self._diagram_palette_toolbar):
             btn = tb.widgetForAction(self.sim_mode_action)
@@ -1692,7 +1789,11 @@ class MainWindow(QMainWindow):
         self._run_worker = _RunLoopWorker(
             self._controller.model,
             dt_s=self._active_run_dt_s,
-            tick_interval_ms=25,
+            tick_interval_ms=None,
+            realtime_pacing=bool(
+                not hasattr(self, "_canvas_realtime_action")
+                or self._canvas_realtime_action.isChecked()
+            ),
             plugin_registry=self._controller.plugin_registry,
             model_directory=_md,
             # Always apply diagram-sourced FMU parameters at init; must not depend on hold/series flags
@@ -2330,6 +2431,7 @@ class MainWindow(QMainWindow):
             return
         if not (
             hasattr(self, "_canvas_record_action")
+            and hasattr(self, "_canvas_realtime_action")
             and hasattr(self, "_canvas_play_action")
             and hasattr(self, "_canvas_pause_action")
             and hasattr(self, "_canvas_stop_action")
@@ -2345,6 +2447,7 @@ class MainWindow(QMainWindow):
         add_group(
             "studio-runtime",
             [
+                self._canvas_realtime_action,
                 self._canvas_play_action,
                 self._canvas_pause_action,
                 self._canvas_stop_hold_action,

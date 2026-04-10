@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Stopwatch-style icon (informative; tinted at runtime like other symbolic icons). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#1c1c1c" d="M13 2h-2v2.05A8.01 8.01 0 0 0 6.05 9H4v2h2.05a8.01 8.01 0 0 0 4.95 4.95V20h2v-4.05A8.01 8.01 0 0 0 17.95 11H20V9h-2.05A8.01 8.01 0 0 0 13 4.05V2zm-1 4a6 6 0 1 1 0 12 6 6 0 0 1 0-12z"/>
+  <path fill="#1c1c1c" d="M12 8h1.25v4.75L12 13.5z"/>
+  <circle cx="17" cy="5" r="1.2" fill="#1c1c1c"/>
+</svg>
