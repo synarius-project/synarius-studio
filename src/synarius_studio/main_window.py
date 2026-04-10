@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStyle,
+    QTabBar,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -54,7 +55,14 @@ from .app_logging import attach_split_studio_gui_log_handlers, main_log_path
 from .log_emitter import LogEmitter
 from ._version import __version__
 from synarius_core.controller import CommandError, MinimalController
-from synarius_core.dataflow_sim import DataflowCompilePass, SimpleRunEngine, SimulationContext, elementary_has_fmu_path
+from synarius_core.dataflow_sim import (
+    DataflowCompilePass,
+    SimpleRunEngine,
+    SimulationContext,
+    elementary_has_fmu_path,
+    generate_fmfl_document,
+    generate_unrolled_python_step_document,
+)
 from synarius_core.io import load_timeseries_file
 from synarius_core.library import LibraryCatalog
 from synarius_core.model import (
@@ -101,7 +109,9 @@ from .diagram.dataflow_canvas import (
 from .diagram.dataflow_layout import SCENE_RECT, open_syn_dialog_start_dir
 from .diagram.placement_interactive import VARIABLE_NAME_DRAG_MIME
 from .diagram.placement_interactive import SIGNAL_NAME_DRAG_MIME
+from .code_view import ReadOnlyCodeView
 from .dataviewer_select_dialog import SelectDataViewerDialog
+from .experiment_codegen import compile_dataflow_for_view
 from .fmu_import_dialog import FmuImportDialog
 from .resource_paths import prepend_dev_synarius_apps_src
 from .simulation_step_count_field import SimulationStepCountField
@@ -116,7 +126,6 @@ ERROR_COLOR = "#FF6666"
 _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
 _MW_LOG = logging.getLogger("synarius_studio.main_window")
-
 
 def _studio_library_catalog() -> LibraryCatalog:
     """Defer heavy library scan when supported; tolerate older synarius-core without ``defer_initial_load``."""
@@ -483,6 +492,15 @@ class MainWindow(QMainWindow):
         self._sim_time_last_s: float = 0.0
         self._sim_step_count_fields: list[SimulationStepCountField] = []
         self._sim_step_count_actions: list[QWidgetAction] = []
+        self._active_run_dt_s: float = 0.02
+        #: Nach frischem Simulationsstart (nicht Hold-Resume): FMFL/Python-Tabs ggf. wieder anlegen/aktualisieren.
+        self._refresh_experiment_tabs_after_worker_start: bool = False
+        self._fmfl_code_view: ReadOnlyCodeView | None = None
+        self._python_code_view: ReadOnlyCodeView | None = None
+        self._experiment_codegen_debounce = QTimer(self)
+        self._experiment_codegen_debounce.setSingleShot(True)
+        self._experiment_codegen_debounce.setInterval(200)
+        self._experiment_codegen_debounce.timeout.connect(self._refresh_experiment_codegen_views)  # type: ignore[arg-type]
 
         central = QWidget(self)
         root_layout = QVBoxLayout(central)
@@ -966,6 +984,19 @@ class MainWindow(QMainWindow):
         view_host_layout.addWidget(self._dataflow_view)
         canvas_host_layout.addWidget(self._diagram_view_host, 1)
 
+        self._canvas_center_tabs = QTabWidget(self)
+        self._canvas_center_tabs.setDocumentMode(True)
+        self._canvas_center_tabs.setTabsClosable(True)
+        self._canvas_center_tabs.setMovable(False)
+        self._canvas_center_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 0; margin: 0; padding: 0; }\n"
+            + studio_tab_bar_stylesheet(selected_tab_bg=LIBRARY_HEADER_BUTTON_HOVER)
+        )
+        MainWindow._tab_bar_compact_only_needed(self._canvas_center_tabs)
+        self._canvas_center_tabs.addTab(canvas_host, "Canvas")
+        self._canvas_center_tabs.tabBar().setTabButton(0, QTabBar.ButtonPosition.RightSide, None)
+        self._canvas_center_tabs.tabCloseRequested.connect(self._on_canvas_center_tab_close_requested)
+
         self.right_tabs = QTabWidget(self)
         self.right_tabs.setTabPosition(QTabWidget.TabPosition.West)
         self.right_tabs.addTab(self._build_experiment_panel(), "Measurements")
@@ -995,7 +1026,7 @@ class MainWindow(QMainWindow):
 
         self.center_split = QSplitter(self)
         self.center_split.setOrientation(Qt.Orientation.Vertical)
-        self.center_split.addWidget(canvas_host)
+        self.center_split.addWidget(self._canvas_center_tabs)
         self.center_split.addWidget(self.bottom_tabs)
         self.center_split.setStretchFactor(0, 1)
         self.center_split.setStretchFactor(1, 0)
@@ -1012,6 +1043,59 @@ class MainWindow(QMainWindow):
         self.horizontal_split.setSizes([_left_resources_w, 712, 220])
 
         root_layout.addWidget(self.horizontal_split, 1)
+
+    def _on_canvas_center_tab_close_requested(self, index: int) -> None:
+        if index <= 0:
+            return
+        w = self._canvas_center_tabs.widget(index)
+        if w in (self._fmfl_code_view, self._python_code_view):
+            self._canvas_center_tabs.removeTab(index)
+
+    def _ensure_experiment_code_tabs(self) -> None:
+        """FMFL- und Python-Tab nur im Experimentiermodus; Inhalt via :meth:`_refresh_experiment_codegen_views`."""
+        if not self.sim_mode_action.isChecked():
+            return
+        tw = self._canvas_center_tabs
+        if self._fmfl_code_view is None:
+            self._fmfl_code_view = ReadOnlyCodeView(self)
+        if self._python_code_view is None:
+            self._python_code_view = ReadOnlyCodeView(self)
+        if tw.indexOf(self._fmfl_code_view) < 0:
+            tw.addTab(self._fmfl_code_view, "FMFL")
+        if tw.indexOf(self._python_code_view) < 0:
+            tw.addTab(self._python_code_view, "Python")
+
+    def _remove_experiment_code_tabs(self) -> None:
+        tw = getattr(self, "_canvas_center_tabs", None)
+        if tw is None:
+            return
+        for w in (self._fmfl_code_view, self._python_code_view):
+            if w is None:
+                continue
+            idx = tw.indexOf(w)
+            if idx >= 0:
+                tw.removeTab(idx)
+
+    def _schedule_experiment_codegen_refresh(self) -> None:
+        """Debounced refresh of FMFL/Python tabs after diagram or model changes (experiment mode)."""
+        if not self.sim_mode_action.isChecked():
+            return
+        self._experiment_codegen_debounce.start()
+
+    def _refresh_experiment_codegen_views(self) -> None:
+        if not self.sim_mode_action.isChecked():
+            return
+        self._ensure_experiment_code_tabs()
+        view = compile_dataflow_for_view(self._controller.model)
+        dt = float(getattr(self, "_active_run_dt_s", 0.02) or 0.02)
+        if self._fmfl_code_view is not None:
+            self._fmfl_code_view.set_plain_text(
+                generate_fmfl_document(view.compiled, dt_s=dt, diagnostics=view.diagnostics)
+            )
+        if self._python_code_view is not None:
+            self._python_code_view.set_plain_text(
+                generate_unrolled_python_step_document(view.compiled, dt_s=dt, diagnostics=view.diagnostics)
+            )
 
     def _reload_library_and_plugins(self) -> None:
         self._controller.library_catalog = LibraryCatalog(extra_roots=studio_library_extra_roots())
@@ -1318,6 +1402,11 @@ class MainWindow(QMainWindow):
             if isinstance(btn, QToolButton):
                 btn.setCheckable(True)
                 btn.setChecked(on)
+        if on:
+            self._ensure_experiment_code_tabs()
+            self._refresh_experiment_codegen_views()
+        else:
+            self._remove_experiment_code_tabs()
 
     def _on_sim_mode_action_toggled(self, checked: bool) -> None:
         if self._sim_mode_suppress_action:
@@ -1586,7 +1675,11 @@ class MainWindow(QMainWindow):
             _EXP_LOG.info("simulation hold-resume: keep existing recording buffers")
         else:
             _EXP_LOG.info("simulation start: recording disabled")
+        self._refresh_experiment_tabs_after_worker_start = (not preserve_series) and bool(
+            self.sim_mode_action.isChecked()
+        )
         if not self._warn_if_fmu_without_runtime_plugin():
+            self._refresh_experiment_tabs_after_worker_start = False
             self._sync_play_actions_checked(False)
             return
         _md = None
@@ -1595,9 +1688,10 @@ class MainWindow(QMainWindow):
             _md = _lp.parent
         # Dedicated run-loop worker thread (GUI remains responsive).
         self._run_thread = QThread(self)
+        self._active_run_dt_s = 0.02
         self._run_worker = _RunLoopWorker(
             self._controller.model,
-            dt_s=0.02,
+            dt_s=self._active_run_dt_s,
             tick_interval_ms=25,
             plugin_registry=self._controller.plugin_registry,
             model_directory=_md,
@@ -1701,6 +1795,11 @@ class MainWindow(QMainWindow):
     def _on_worker_started(self) -> None:
         # Already marked running in _try_start_simulation.
         self._refresh_variable_value_labels()
+        if self._refresh_experiment_tabs_after_worker_start:
+            self._refresh_experiment_tabs_after_worker_start = False
+            if self.sim_mode_action.isChecked():
+                self._ensure_experiment_code_tabs()
+                self._refresh_experiment_codegen_views()
 
     def _reset_open_live_dataviewers_for_new_run(self) -> None:
         """Reset plotted series in already-open live DataViewer dialogs before a new run starts."""
@@ -1724,6 +1823,7 @@ class MainWindow(QMainWindow):
     def _on_worker_start_failed(self, message: str) -> None:
         self.statusBar().showMessage(message or "Cannot start simulation.")
         _EXP_LOG.error("simulation start failed: %s", message or "unknown")
+        self._refresh_experiment_tabs_after_worker_start = False
         self._simulation_running = False
         self._simulation_paused = False
         self._sim_steps_remaining = 0
@@ -2552,6 +2652,7 @@ class MainWindow(QMainWindow):
         self._sync_simulation_mode_from_model()
         self._apply_controller_selection_to_scene()
         self._variables_panel.refresh()
+        self._schedule_experiment_codegen_refresh()
 
     def _on_connector_route_command(self, cmd: str) -> None:
         """Run connector route built interactively on the canvas (same path as typing in the console)."""

@@ -9,5 +9,6 @@ synarius-studio Documentation
 .. toctree::
    :maxdepth: 2
 
+   strategic_vision
    requirements/index
 

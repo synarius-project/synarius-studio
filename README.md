@@ -24,6 +24,18 @@ Download latest Windows installer (MSI): https://github.com/synarius-project/syn
   - This will be achieved by generalizing the underlying process-ontological concepts and adapting them for various use cases (MBSE, audio, microcontroller programming, dynamic system simulation, load flow optimization, general optimization, ...).
 - The core system is open source. Extended commercial licensing models for add-on modules or enterprise requirements remain optional.
 
+### Long-term perspective: Python simulation & optimization stacks
+
+Over the long term, Synarius Studio may serve as a **graphical front-end** that prepares models, parameters, and experiment definitions and **delegates execution** to mature Python ecosystems—alongside or instead of bespoke paths in `synarius_core`. Examples of such stacks (not commitments; direction of travel):
+
+| Stack | Typical role |
+|-------|----------------|
+| **SciPy** | Numerical methods and **ODE** integration (`scipy.integrate` and related APIs) for continuous-time dynamics. |
+| **SimPy** | **Discrete-event**, process-based simulation (queues, resources, stochastic processes). |
+| **Pyomo** | **Algebraic optimization** and constraint modeling (LP/MIP/NLP and related solvers). |
+
+Integration would likely use the existing **plugin** and **controller** boundaries so that the GUI stays decoupled from any one backend. Nothing here replaces near-term roadmap items; it describes **architectural headroom** for MBSE-style and operations-research workflows.
+
 ## Goals (scope)
 
 SN Studio is responsible for:
@@ -76,6 +88,7 @@ python -m synarius_studio
 
 - Live docs: https://synarius-project.github.io/synarius-studio/
 - Docs source: https://github.com/synarius-project/synarius-studio/tree/main/docs
+- Long-term backend perspective (SciPy ODE, SimPy, Pyomo): see `docs/strategic_vision.rst` (Sphinx: *Strategic vision: Python backends*).
 
 ## Branching Strategy
 
