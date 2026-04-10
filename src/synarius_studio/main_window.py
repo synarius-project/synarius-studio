@@ -1046,7 +1046,6 @@ class MainWindow(QMainWindow):
         self._canvas_realtime_action.toggled.connect(self._on_canvas_realtime_pacing_toggled)
 
         self._diagram_palette_toolbar.addSeparator()
-        self._diagram_palette_toolbar.addAction(self._canvas_realtime_action)
         self._diagram_palette_toolbar.addAction(self._canvas_play_action)
         self._diagram_palette_toolbar.addAction(self._canvas_pause_action)
         self._diagram_palette_toolbar.addAction(self._canvas_stop_hold_action)
@@ -1055,6 +1054,7 @@ class MainWindow(QMainWindow):
         self._diagram_palette_toolbar.addAction(self._canvas_step_count_action)
         self._diagram_palette_toolbar.addSeparator()
         self._diagram_palette_toolbar.addAction(self._canvas_record_action)
+        self._diagram_palette_toolbar.addAction(self._canvas_realtime_action)
 
         canvas_host_layout.addWidget(self._diagram_palette_toolbar, 0)
 
@@ -2447,7 +2447,6 @@ class MainWindow(QMainWindow):
         add_group(
             "studio-runtime",
             [
-                self._canvas_realtime_action,
                 self._canvas_play_action,
                 self._canvas_pause_action,
                 self._canvas_stop_hold_action,
@@ -2461,6 +2460,12 @@ class MainWindow(QMainWindow):
         add_group(
             "studio-runtime-record",
             [self._canvas_record_action],
+            separator=True,
+            spacing_px=8,
+        )
+        add_group(
+            "studio-runtime-realtime",
+            [self._canvas_realtime_action],
             separator=True,
             spacing_px=8,
         )

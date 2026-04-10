@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Graphical elements (view model) &#8212; synarius-studio  documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/zerovm.css?v=bbc7d13e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-data-viewer/jsonview.bundle.css?v=f6ef2277" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/libs/html/datatables.min.css?v=4b4fd840" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/common_css/needstable.css?v=5e1b6797" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/common_css/need_core.css?v=f5b60a78" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/common_css/need_links.css?v=2150a916" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/common_css/need_style.css?v=92936fa5" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/common_css/need_toggle.css?v=5c6620df" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-needs/modern.css?v=803738c0" />
+    <script src="../../_static/jquery.js?v=5d32c60e"></script>
+    <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/sphinx-data-viewer/jsonview.bundle.js?v=18cd53c5"></script>
+    <script src="../../_static/sphinx-data-viewer/jsonview_loader.js?v=f7ff7e7d"></script>
+    <script src="../../_static/sphinx-needs/libs/html/datatables.min.js?v=8a4aee21"></script>
+    <script src="../../_static/sphinx-needs/libs/html/datatables_loader.js?v=a2cae175"></script>
+    <script src="../../_static/sphinx-needs/libs/html/sphinx_needs_collapse.js?v=dca66431"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="prev" title="Data Viewer Component Requirements" href="data_viewer.html" /> 
+  </head><body>
+    <div class="related" role="navigation" aria-label="Related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="data_viewer.html" title="Data Viewer Component Requirements"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">synarius-studio  documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" >Requirements</a> &#187;</li>
+          <li class="nav-item nav-item-2"><a href="index.html" accesskey="U">Component Requirements</a> &#187;</li>
+        <li class="nav-item nav-item-this"><a href="">Graphical elements (view model)</a></li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <section id="graphical-elements-view-model">
+<h1>Graphical elements (view model)<a class="headerlink" href="#graphical-elements-view-model" title="Link to this heading">¶</a></h1>
+<p>This UML describes the <strong>presentation layer</strong> for the <strong>data-flow graph</strong> in Synarius Studio: variable blocks, operator blocks, and directed edges. It extends the <strong>domain data model in synarius-core</strong> (see the <code class="docutils literal notranslate"><span class="pre">data_model</span></code> document there): semantics, IDs, and <code class="docutils literal notranslate"><span class="pre">Connector</span></code> live in core; <strong>layout</strong>, <strong>ports</strong>, and <strong>edge rendering</strong> are modelled here. The studio GUI may map these types to concrete widgets; this specification stays <strong>framework-agnostic</strong>.</p>
+<p>The graph is shown on a <strong>zoomable canvas</strong>: a <strong>diagram view</strong> applies zoom and pan via a view-to-surface transform; a <strong>diagram surface</strong> holds the drawable elements and is <strong>populated</strong> when the diagram is built or updated.</p>
+<section id="uml-diagram">
+<h2>UML diagram<a class="headerlink" href="#uml-diagram" title="Link to this heading">¶</a></h2>
+</section>
+<section id="view-concepts">
+<h2>View concepts<a class="headerlink" href="#view-concepts" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p><strong>ZoomableDiagramView</strong> — Viewport with zoom level and pan; optional <strong>fit</strong> to content; user input (wheel, buttons, gestures) adjusts the transform while <strong>surface coordinates</strong> stay stable.</p></li>
+<li><p><strong>DiagramSurface</strong> — Container for one diagram page: <strong>GraphBlockNode</strong>, <strong>PortHandle</strong>, and <strong>ConnectionEdge</strong> instances; supports clear and rebuild from <strong>GraphDiagram</strong>.</p></li>
+<li><p><strong>VariableBlockNode</strong> / <strong>OperatorBlockNode</strong> — On-canvas nodes for domain <strong>Variable</strong> / <strong>BasicOperator</strong>; <strong>stack_order</strong> and <strong>bounds</strong> control drawing order and layout.</p></li>
+<li><p><strong>PortHandle</strong> — Edge anchor; <strong>logical_pin_name</strong> aligns with <code class="docutils literal notranslate"><span class="pre">Connector</span></code> <strong>source_pin</strong> / <strong>target_pin</strong>.</p></li>
+<li><p><strong>ConnectionEdge</strong> — Routed polyline or path for a <strong>Connector</strong>; <strong>connector_id</strong> links to the domain object.</p></li>
+</ul>
+</section>
+<section id="relationship-to-the-domain-model">
+<h2>Relationship to the domain model<a class="headerlink" href="#relationship-to-the-domain-model" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p><strong>GraphBlockNode</strong> typically pairs 1:1 with an <code class="docutils literal notranslate"><span class="pre">ElementaryInstance</span></code> (<code class="docutils literal notranslate"><span class="pre">Variable</span></code> or <code class="docutils literal notranslate"><span class="pre">BasicOperator</span></code>) via <strong>domain_object_id</strong>.</p></li>
+<li><p><strong>ConnectionEdge</strong> references a <code class="docutils literal notranslate"><span class="pre">Connector</span></code> via <strong>connector_id</strong>; port handles match <strong>source_pin</strong> / <strong>target_pin</strong>.</p></li>
+<li><p>On-canvas geometry may be tracked independently of <code class="docutils literal notranslate"><span class="pre">LocatableInstance.position</span></code> in the domain; keeping them in sync is an implementation choice.</p></li>
+</ul>
+</section>
+</section>
+
+
+            <div class="clearer"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+  <div>
+    <h3><a href="../../index.html">Table of Contents</a></h3>
+    <ul>
+<li><a class="reference internal" href="#">Graphical elements (view model)</a><ul>
+<li><a class="reference internal" href="#uml-diagram">UML diagram</a></li>
+<li><a class="reference internal" href="#view-concepts">View concepts</a></li>
+<li><a class="reference internal" href="#relationship-to-the-domain-model">Relationship to the domain model</a></li>
+</ul>
+</li>
+</ul>
+
+  </div>
+  <div>
+    <h4>Previous topic</h4>
+    <p class="topless"><a href="data_viewer.html"
+                          title="previous chapter">Data Viewer Component Requirements</a></p>
+  </div>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="../../_sources/requirements/components/graphical_elements.rst.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="Related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="data_viewer.html" title="Data Viewer Component Requirements"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">synarius-studio  documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" >Requirements</a> &#187;</li>
+          <li class="nav-item nav-item-2"><a href="index.html" >Component Requirements</a> &#187;</li>
+        <li class="nav-item nav-item-this"><a href="">Graphical elements (view model)</a></li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+    &#169; Copyright .
+      Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 9.0.4.
+    </div>
+  </body>
+</html>
