@@ -13,8 +13,14 @@ class SmokeTest(unittest.TestCase):
     def test_imports(self) -> None:
         import synarius_studio
 
-        # Importing the package should work even if PySide6 isn't installed yet.
         self.assertIsNotNone(synarius_studio)
+
+    def test_pyside6_qtcore_importable(self) -> None:
+        """Guards against missing/wrong-environment PySide6 (see README developer setup)."""
+        from PySide6.QtCore import Qt, QTimer
+
+        self.assertIsNotNone(Qt)
+        self.assertIsNotNone(QTimer)
 
     def test_standard_library_from_core(self) -> None:
         from synarius_studio.standard_library import standard_library_root

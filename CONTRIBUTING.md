@@ -23,14 +23,16 @@ You can contribute by:
    git checkout -b feature/my-feature
    ```
 
-3. Make your changes
-4. Run tests:
+3. **Local setup:** use a **venv** and install this package in **editable** mode from `synarius-studio/` so dependencies (including **PySide6** and local `synarius-core` / `synarius-apps` per `pyproject.toml`) land in one environment. See **[README.md](README.md) — Develop / Run (monorepo)** for the full sequence. Use the venv’s `python` for `pip` and `pytest`, and select that interpreter in your IDE.
+
+4. Make your changes
+5. Run tests:
 
    ```bash
    pytest
    ```
 
-5. Open a Pull Request
+6. Open a Pull Request
 
 ## Development Guidelines
 

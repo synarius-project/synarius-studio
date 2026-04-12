@@ -4,7 +4,7 @@
 
 Graphical simulation tool with a PySide6 GUI for Synarius.
 
-**Python 3.11.x** is required (see `requires-python` in `pyproject.toml`).
+**Python 3.11–3.14** is supported (see `requires-python` in `pyproject.toml`). Use a **virtual environment** and the **same** interpreter for `pip`/`python` and for your IDE.
 
 **Contributing:** follow the **[Synarius programming guidelines](https://synarius-project.github.io/synarius-guidelines/programming_guidelines.html)** (HTML) and this repository’s **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
@@ -65,24 +65,56 @@ SN Studio is responsible for:
 - Support for lookup tables and characteristic curves.
 - Support for DCM and HDF5 files (optional: other formats like par [CANape], ASAM CDF/CDFX, CSV).
 
-## Develop / Run (minimal)
+## Develop / Run (monorepo)
 
-For monorepo development, install `synarius-apps` editable as well, because Studio reuses shared UI components
-from that package (e.g. dataviewer integration, terminal console widget):
+Studio declares **PySide6** and local siblings (`synarius-apps`, `synarius-core`) in `pyproject.toml`. Install from the **`synarius-studio`** directory so `pip` pulls those dependencies into **one** environment.
 
-```bash
-pip install -e ../synarius-apps
-```
+1. **Create and activate a venv** (examples):
 
-```bash
-run-synarius-studio
-```
+   ```bash
+   # Windows (adjust Python launcher if needed)
+   py -3.12 -m venv .venv
+   .venv\Scripts\activate
+   ```
 
-Or module mode:
+   ```bash
+   # Linux / macOS
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
 
-```bash
-python -m synarius_studio
-```
+2. **Install Studio in editable mode** (from `synarius-studio/` with sibling checkouts `../synarius-core` and `../synarius-apps`):
+
+   ```bash
+   python -m pip install -U pip
+   python -m pip install -e .
+   ```
+
+3. **Optional:** install **synarius-apps** editable as well when you change that package frequently (Studio already depends on it for shared UI, e.g. dataviewer, terminal console):
+
+   ```bash
+   python -m pip install -e ../synarius-apps
+   ```
+
+4. **Verify PySide6** with the same `python` you use to run the app (avoids “wrong venv” / typo issues):
+
+   ```bash
+   python -c "from PySide6.QtCore import Qt, QTimer; print('PySide6 OK')"
+   ```
+
+5. **Run** (after activation):
+
+   ```bash
+   run-synarius-studio
+   ```
+
+   Or module mode:
+
+   ```bash
+   python -m synarius_studio
+   ```
+
+6. **IDE:** set the workspace interpreter to this venv’s `python` (e.g. `.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on Unix).
 
 ## Documentation
 
