@@ -14,6 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Clone sibling repos (pyproject.toml file: dependencies)
+        run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          cd "$parent"
+          git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
+          git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - name: Install PlantUML (Sphinx PlantUML diagrams)
         run: |
           sudo apt-get update

@@ -16,6 +16,12 @@ Main GUI Component Requirements
    - experimentation/recording area
    - modeling canvas
 
+.. comp:: Modeling edits via controller protocol
+   :id: STUDIO-COMP-GUI-005
+   :status: Must
+
+   User-driven edits on the modeling canvas (and equivalent graph-editing entry points in the main window) change domain state only through the Synarius Core controller implementing the Controller Command Protocol; see STUDIO-ARCH-005.
+
 .. comp:: Main Window + Mode-Dependent Tabs
    :id: STUDIO-COMP-GUI-002
    :status: Must

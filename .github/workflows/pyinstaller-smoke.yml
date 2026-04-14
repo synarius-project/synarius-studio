@@ -12,6 +12,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Clone sibling repos (pyproject.toml file: dependencies)
+        shell: bash
+        run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          cd "$parent"
+          git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
+          git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"

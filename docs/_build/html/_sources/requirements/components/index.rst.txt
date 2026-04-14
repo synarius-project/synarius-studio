@@ -7,4 +7,5 @@ Component Requirements
    overview
    gui
    data_viewer
+   graphical_elements
 
