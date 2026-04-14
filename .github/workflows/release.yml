@@ -16,8 +16,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
         run: |
-          parent="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$parent"
+          cd "$GITHUB_WORKSPACE"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - uses: actions/setup-python@v6
@@ -37,8 +36,7 @@ jobs:
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
         shell: bash
         run: |
-          parent="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$parent"
+          cd "$GITHUB_WORKSPACE"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - uses: actions/setup-python@v6
