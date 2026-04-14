@@ -12,6 +12,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
@@ -27,10 +30,13 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: dist-python
-          path: dist/*
+          path: synarius-studio/dist/*
 
   windows-installer:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
@@ -94,8 +100,8 @@ jobs:
         with:
           name: pyinstaller-diagnostics
           path: |
-            build/**/warn-*.txt
-            build/**/xref-*.html
+            synarius-studio/build/**/warn-*.txt
+            synarius-studio/build/**/xref-*.html
             ${{ runner.temp }}/synarius-smoke-logs/**
           if-no-files-found: warn
       - run: choco install wixtoolset -y
@@ -227,7 +233,7 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-installer
-          path: dist/Synarius_Installer_*.msi
+          path: synarius-studio/dist/Synarius_Installer_*.msi
 
   release-assets:
     runs-on: ubuntu-latest
@@ -242,4 +248,4 @@ jobs:
         with:
           prerelease: ${{ startsWith(github.ref_name, 'v0.0.') }}
           generate_release_notes: true
-          files: release-assets/dist-windows-installer/Synarius_Installer_*.msi
+          files: release-assets/dist-windows-installer/synarius-studio/dist/Synarius_Installer_*.msi

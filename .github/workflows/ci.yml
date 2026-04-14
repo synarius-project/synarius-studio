@@ -12,6 +12,9 @@ env:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"

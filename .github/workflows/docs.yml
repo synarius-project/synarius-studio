@@ -12,6 +12,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # checkout puts the repo in $GITHUB_WORKSPACE/synarius-studio/
+        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
@@ -31,7 +35,7 @@ jobs:
       - run: sphinx-build -b html docs docs/_build/html
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: docs/_build/html
+          path: synarius-studio/docs/_build/html
 
   deploy:
     needs: build

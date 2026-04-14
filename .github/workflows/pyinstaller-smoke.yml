@@ -10,6 +10,9 @@ env:
 jobs:
   windows-onedir-smoke:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
@@ -37,12 +40,12 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: pyinstaller-onedir
-          path: dist/synarius-studio/**
+          path: synarius-studio/dist/synarius-studio/**
       - name: Upload PyInstaller diagnostics
         uses: actions/upload-artifact@v5
         with:
           name: pyinstaller-diagnostics-smoke
           path: |
-            build/**/warn-*.txt
-            build/**/xref-*.html
+            synarius-studio/build/**/warn-*.txt
+            synarius-studio/build/**/xref-*.html
           if-no-files-found: warn
