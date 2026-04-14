@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Clone sibling repos (pyproject.toml file: dependencies)
+      - name: "Clone sibling repos (pyproject.toml file: dependencies)"
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           cd "$parent"
@@ -34,7 +34,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Clone sibling repos (pyproject.toml file: dependencies)
+      - name: "Clone sibling repos (pyproject.toml file: dependencies)"
         shell: bash
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
