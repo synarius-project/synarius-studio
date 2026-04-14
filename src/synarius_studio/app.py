@@ -91,14 +91,18 @@ def run(argv: Sequence[str] | None = None) -> int:
     app = QApplication(args)
 
     from .app_logging import install_qt_message_handler
+    from .theme import apply_dark_palette
 
     install_qt_message_handler()
 
     # Windows-Style (windowsvista) respektiert QTabBar::setExpanding / qproperty-expanding oft nicht —
-    # dann wirken nur einzelne vertikale Tabs „kompakt“. Fusion verhält sich konsistent.
-    _fusion = QStyleFactory.create("Fusion")
+    # dann wirken nur einzelne vertikale Tabs „kompakt”. Fusion verhält sich konsistent.
+    # Dark-Palette muss nach setStyle gesetzt werden: Fusion respektiert QPalette vollständig
+    # und überschreibt damit die OS-Farbeinstellung unabhängig vom System-Theme.
+    _fusion = QStyleFactory.create(“Fusion”)
     if _fusion is not None:
         app.setStyle(_fusion)
+    apply_dark_palette(app)
 
     # Use the same app icon as Synarius Dataviewer so both applications share
     # a consistent symbol in the Windows taskbar and Alt+Tab switcher.

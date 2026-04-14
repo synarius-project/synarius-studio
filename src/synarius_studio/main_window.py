@@ -66,7 +66,7 @@ from pathlib import Path
 from .app_logging import attach_split_studio_gui_log_handlers, main_log_path
 from .log_emitter import LogEmitter
 from ._version import __version__
-from synarius_core.controller import CommandError, MinimalController
+from synarius_core.controller import CommandError, SynariusController
 from synarius_core.dataflow_sim import (
     DataflowCompilePass,
     SimpleRunEngine,
@@ -517,7 +517,7 @@ class MainWindow(QMainWindow):
             "MainWindow __init__: build_marker=ctlr_catalog_tryexcept title_version=%s",
             __version__,
         )
-        self._controller = MinimalController(
+        self._controller = SynariusController(
             library_catalog=_studio_library_catalog(),
             plugin_registry=_studio_plugin_registry(),
         )
@@ -1525,15 +1525,7 @@ class MainWindow(QMainWindow):
                 self._run_protocol_lines_as_console(dlg.protocol_commands())
             elif not new_on and was:
                 h = shlex.quote(v.hash_name)
-                self._run_protocol_lines_as_console(
-                    [
-                        f"set {h}.stim_kind none",
-                        f"set {h}.stim_p0 0",
-                        f"set {h}.stim_p1 1",
-                        f"set {h}.stim_p2 1",
-                        f"set {h}.stim_p3 0",
-                    ]
-                )
+                self._run_protocol_lines_as_console([f"set {h}.stim_kind none"])
             self._refresh_diagram()
             return
         if action == "measure":
@@ -1678,7 +1670,9 @@ class MainWindow(QMainWindow):
         return max(1, val)
 
     def _on_step_count_value_committed(self, raw: str) -> None:
-        self._sim_step_count = self._normalized_step_count(raw)
+        new_count = self._normalized_step_count(raw)
+        changed = new_count != self._sim_step_count
+        self._sim_step_count = new_count
         text = str(self._sim_step_count)
         alive: list[SimulationStepCountField] = []
         for fld in self._sim_step_count_fields:
@@ -1688,6 +1682,8 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 continue
         self._sim_step_count_fields = alive
+        if changed:
+            self._execute_controller_line_for_ui(f"set @main.simulation_steps {text}")
 
     def _on_simulation_step_action_triggered(self) -> None:
         if not self.sim_mode_action.isChecked():
@@ -2725,7 +2721,7 @@ class MainWindow(QMainWindow):
             return True
         if s.startswith("undo") or s.startswith("redo") or s.startswith("mv "):
             return True
-        if s.startswith("fmu bind") or s.startswith("fmu reload"):
+        if s.startswith("fmu bind") or s.startswith("fmu reload") or s.startswith("sync "):
             return True
         return False
 
@@ -3417,7 +3413,7 @@ class MainWindow(QMainWindow):
         return n_patched
 
     def _controller_execute_logged(self, cmd: str, *, source: str) -> str | None:
-        """Single entry for ``MinimalController.execute``: every protocol line is logged (file + GUI)."""
+        """Single entry for ``SynariusController.execute``: every protocol line is logged (file + GUI)."""
         line = cmd.strip()
         self._ensure_legacy_dataviewer_open_widget_attrs()
         _CMD_LOG.info("command [%s]: %s", source, line)

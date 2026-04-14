@@ -1,7 +1,8 @@
-"""Interactive orthogonal connector routing (click output pin → H/V bends → input pin)."""
+"""Interactive orthogonal connector routing (click free pin → H/V bends → opposite pin)."""
 
 from __future__ import annotations
 
+import math
 import shlex
 from uuid import UUID
 
@@ -15,8 +16,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.controller import MinimalController
+from synarius_core.controller import SynariusController
 from synarius_core.model import Connector
+from synarius_core.model.connector_routing import encode_bends_from_polyline, orthogonal_polyline
 
 from .dataflow_items import (
     CONNECTOR_LINE_WIDTH,
@@ -133,12 +135,80 @@ def _build_new_connector_command(
     return " ".join(parts)
 
 
-def _pen_cursor() -> QCursor:
+# Ein gemeinsamer Stift: historische Pixelkoordinaten, Spitze bei (3, 27.5); alles relativ zur Spitze zeichnen.
+_PEN_TIP_X = 3.0
+_PEN_TIP_Y = 27.5
+# Richtung Körper → Spitze (Spitze zeigt nach unten links), für Rotationsabgleich mit Kantennormale.
+_PEN_NIB_DX = -5.5
+_PEN_NIB_DY = 5.5
+
+_PEN_CURSOR_SIZE = 48
+_PEN_CURSOR_HOT = _PEN_CURSOR_SIZE // 2
+
+
+def _draw_connector_pen_at_tip_origin(painter: QPainter) -> None:
+    """Stift mit Spitze in (0,0); Spitze zeigt nach unten links (45°-Haltung zum Schreiben)."""
+    tx, ty = _PEN_TIP_X, _PEN_TIP_Y
+
+    def p(x: float, y: float) -> QPointF:
+        return QPointF(x - tx, y - ty)
+
+    nib = QPolygonF([p(3.0, 27.5), p(10.0, 23.2), p(8.5, 22.0)])
+    painter.drawPolygon(nib)
+
+    body = QPainterPath()
+    body.moveTo(p(9.2, 20.2))
+    body.lineTo(p(11.0, 22.0))
+    body.lineTo(p(25.0, 8.0))
+    body.quadTo(p(27.0, 6.0), p(26.2, 8.8))
+    body.lineTo(p(23.2, 6.2))
+    body.closeSubpath()
+    painter.drawPath(body)
+
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(p(12.5, 19.0), p(14.0, 17.2))
+    painter.drawLine(p(14.0, 17.2), p(20.5, 10.5))
+
+
+def _inward_normal_at_pin_on_block(block: QGraphicsItem, pin: QGraphicsItem) -> tuple[float, float]:
     """
-    Mechanical-pen style cursor (~45°): tip bottom-left, hotspot on the nib tip (per design spec).
+    Einheitsvektor in Szene-Koordinaten (y nach unten): von außen auf die Pinposition / ins Innere des Blocks.
+    Senkrecht zur betroffenen Rechteckkante (links, rechts, oben, unten).
     """
-    w, h = 32, 32
-    pm = QPixmap(w, h)
+    br = block.sceneBoundingRect()
+    pc = pin.sceneBoundingRect().center()
+    d_left = abs(pc.x() - br.left())
+    d_right = abs(pc.x() - br.right())
+    d_top = abs(pc.y() - br.top())
+    d_bottom = abs(pc.y() - br.bottom())
+    m = min(d_left, d_right, d_top, d_bottom)
+    if m == d_left:
+        return (1.0, 0.0)
+    if m == d_right:
+        return (-1.0, 0.0)
+    if m == d_top:
+        return (0.0, 1.0)
+    return (0.0, -1.0)
+
+
+def _rotation_deg_align_nib_to(tx: float, ty: float) -> float:
+    """Drehwinkel (QPainter, positiv = Uhrzeigersinn), sodass die Stiftspitze in Richtung (tx,ty) zeigt."""
+    ln = math.hypot(tx, ty)
+    if ln < 1e-9:
+        return 0.0
+    tx, ty = tx / ln, ty / ln
+    nx0, ny0 = _PEN_NIB_DX, _PEN_NIB_DY
+    ln0 = math.hypot(nx0, ny0)
+    nx0, ny0 = nx0 / ln0, ny0 / ln0
+    a0 = math.degrees(math.atan2(ny0, nx0))
+    a1 = math.degrees(math.atan2(ty, tx))
+    return a1 - a0
+
+
+def _render_connector_pen_cursor(rotation_deg: float) -> QCursor:
+    s = _PEN_CURSOR_SIZE
+    hot = _PEN_CURSOR_HOT
+    pm = QPixmap(s, s)
     pm.fill(QColor(0, 0, 0, 0))
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -147,35 +217,22 @@ def _pen_cursor() -> QCursor:
     stroke.setCapStyle(Qt.PenCapStyle.RoundCap)
     painter.setPen(stroke)
     painter.setBrush(QColor(255, 255, 255))
-
-    # Nib tip at bottom-left (hotspot); body runs toward top-right.
-    tip = QPointF(3.0, 27.5)
-    p1 = QPointF(8.5, 22.0)  # nib shoulder inner
-    p2 = QPointF(10.0, 23.2)
-    shaft_a = QPointF(11.0, 22.0)
-    shaft_b = QPointF(25.0, 8.0)
-    shaft_c = QPointF(23.2, 6.2)
-    shaft_d = QPointF(9.2, 20.2)
-
-    nib = QPolygonF([tip, p2, p1])
-    painter.drawPolygon(nib)
-
-    body = QPainterPath()
-    body.moveTo(shaft_d)
-    body.lineTo(shaft_a)
-    body.lineTo(shaft_b)
-    body.quadTo(QPointF(27.0, 6.0), QPointF(26.2, 8.8))
-    body.lineTo(shaft_c)
-    body.closeSubpath()
-    painter.drawPath(body)
-
-    # Clip (upper side of barrel, toward top-left of pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawLine(QPointF(12.5, 19.0), QPointF(14.0, 17.2))
-    painter.drawLine(QPointF(14.0, 17.2), QPointF(20.5, 10.5))
-
+    painter.translate(float(hot), float(hot))
+    painter.rotate(rotation_deg)
+    _draw_connector_pen_at_tip_origin(painter)
     painter.end()
-    return QCursor(pm, int(tip.x()), int(tip.y()))
+    return QCursor(pm, hot, hot)
+
+
+def _pen_drawing_cursor() -> QCursor:
+    """Zeichnen: gleicher Stift, Spitze nach unten links (~45° zur Horizontalen), Rotation 0."""
+    return _render_connector_pen_cursor(0.0)
+
+
+def _pen_ready_cursor_for_pin(pin_item: QGraphicsItem, block: QGraphicsItem) -> QCursor:
+    """Anschlussbereitschaft: gleicher Stift, gedreht — Spitze senkrecht zur Kante, zeigt auf den Pin."""
+    tx, ty = _inward_normal_at_pin_on_block(block, pin_item)
+    return _render_connector_pen_cursor(_rotation_deg_align_nib_to(tx, ty))
 
 
 class ConnectorRouteSketchItem(QGraphicsObject):
@@ -259,11 +316,11 @@ class ConnectorRouteSketchItem(QGraphicsObject):
 
 
 class ConnectorRouteTool(QObject):
-    """State machine: output pin → alternating H/V clicks → free input pin."""
+    """Orthogonal routing: freier Aus- oder Eingangspin → Knickpunkte → freier Gegenpin (In/Out)."""
 
     finished = Signal(str)
 
-    def __init__(self, controller: MinimalController, scene: QGraphicsScene, view: QWidget) -> None:
+    def __init__(self, controller: SynariusController, scene: QGraphicsScene, view: QWidget) -> None:
         super().__init__(view)
         self._controller = controller
         self._scene = scene
@@ -271,6 +328,7 @@ class ConnectorRouteTool(QObject):
         self._sketch: ConnectorRouteSketchItem | None = None
         self._src_block: VariableBlockItem | OperatorBlockItem | FmuBlockItem | None = None
         self._src_pin = ""
+        self._anchor_is_output = True
         self._sx = 0.0
         self._sy = 0.0
         self._bends: list[float] = []
@@ -288,9 +346,18 @@ class ConnectorRouteTool(QObject):
         if self._sketch is not None:
             self._sketch.set_state(self._sx, self._sy, self._bends, self._phase_h, self._mx, self._my)
 
-    def start(self, block: VariableBlockItem | OperatorBlockItem | FmuBlockItem, pin_name: str, sx: float, sy: float) -> None:
+    def start(
+        self,
+        block: VariableBlockItem | OperatorBlockItem | FmuBlockItem,
+        pin_name: str,
+        sx: float,
+        sy: float,
+        *,
+        anchor_is_output: bool,
+    ) -> None:
         self._src_block = block
         self._src_pin = pin_name
+        self._anchor_is_output = anchor_is_output
         self._sx, self._sy = sx, sy
         self._bends = []
         self._phase_h = True
@@ -300,13 +367,14 @@ class ConnectorRouteTool(QObject):
             self._scene.addItem(self._sketch)
         self._sync_sketch()
         self._view.setDragMode(self._view.DragMode.NoDrag)
-        self._view.viewport().setCursor(_pen_cursor())
+        self._view.viewport().setCursor(_pen_drawing_cursor())
 
     def cancel(self) -> None:
         if self._sketch is not None:
             self._scene.removeItem(self._sketch)
             self._sketch = None
         self._src_block = None
+        self._anchor_is_output = True
         self._bends = []
         self._view.setDragMode(self._view.DragMode.RubberBandDrag)
         vp = self._view.viewport()
@@ -317,7 +385,6 @@ class ConnectorRouteTool(QObject):
         if not self.active():
             return
         mx, my = scene_pos.x(), scene_pos.y()
-        # Same half-module grid as block moves / bend drag (orthogonal leg: snap active axis only).
         if self._phase_h:
             self._mx = _snap_scalar_half_module(mx)
             self._my = my
@@ -326,8 +393,57 @@ class ConnectorRouteTool(QObject):
             self._my = _snap_scalar_half_module(my)
         self._sync_sketch()
 
+    def update_active_cursor(
+        self,
+        scene_pos: QPointF,
+        viewport_pos: QPoint,
+        top_item: QGraphicsItem | None,
+    ) -> None:
+        """Über gültigem Zielpin: Stift mit Spitze zum Pin; sonst Zeichenhaltung (Spitze unten links)."""
+        if not self.active():
+            return
+        vp = self._view.viewport()
+        ch = self._valid_completion_hit(scene_pos, top_item)
+        if ch is not None:
+            pin_item, block = ch
+            vp.setCursor(_pen_ready_cursor_for_pin(pin_item, block))
+        else:
+            vp.setCursor(_pen_drawing_cursor())
+
+    def _valid_completion_hit(
+        self, scene_pos: QPointF, top_item: QGraphicsItem | None
+    ) -> tuple[QGraphicsItem, VariableBlockItem | OperatorBlockItem | FmuBlockItem] | None:
+        if not self.active() or self._src_block is None:
+            return None
+        hit = diagram_pin_from_graphics_item(top_item)
+        if hit is None:
+            for it in self._scene.items(scene_pos):
+                hit = diagram_pin_from_graphics_item(it)
+                if hit is not None:
+                    break
+        if hit is None:
+            return None
+        pin_item, block = hit
+        end_out = pin_item.is_output_pin()
+        if end_out == self._anchor_is_output:
+            return None
+        if block is self._src_block and pin_item.logical_pin_name() == self._src_pin:
+            return None
+        eid = _pin_instance_id(block)
+        if eid is None:
+            return None
+        name = pin_item.logical_pin_name()
+        if not _pin_is_free(self._model(), eid, name, is_output=end_out):
+            return None
+        return pin_item, block
+
+    def _cursor_on_valid_completion_pin(
+        self, scene_pos: QPointF, top_item: QGraphicsItem | None
+    ) -> bool:
+        return self._valid_completion_hit(scene_pos, top_item) is not None
+
     def try_start_from_release(self, scene_pos: QPointF, top_item: QGraphicsItem | None) -> bool:
-        """Begin routing after a full click (call from left-button release) on a free output pin."""
+        """Routing starten nach Loslassen auf einem freien Aus- oder Eingangspin."""
         if self.active():
             return False
         hit = diagram_pin_from_graphics_item(top_item)
@@ -339,16 +455,15 @@ class ConnectorRouteTool(QObject):
         if hit is None:
             return False
         pin_item, block = hit
-        if not pin_item.is_output_pin():
-            return False
         eid = _pin_instance_id(block)
         if eid is None:
             return False
         pin_name = pin_item.logical_pin_name()
-        if not _pin_is_free(self._model(), eid, pin_name, is_output=True):
+        is_out = pin_item.is_output_pin()
+        if not _pin_is_free(self._model(), eid, pin_name, is_output=is_out):
             return False
         start = block.connection_point(pin_name)
-        self.start(block, pin_name, start.x(), start.y())
+        self.start(block, pin_name, start.x(), start.y(), anchor_is_output=is_out)
         self.move_mouse_scene(scene_pos)
         return True
 
@@ -365,7 +480,8 @@ class ConnectorRouteTool(QObject):
 
         if hit is not None:
             pin_item, block = hit
-            if pin_item.is_output_pin():
+            end_out = pin_item.is_output_pin()
+            if end_out == self._anchor_is_output:
                 if block is self._src_block and pin_item.logical_pin_name() == self._src_pin:
                     return True
                 self._commit_corner()
@@ -373,20 +489,18 @@ class ConnectorRouteTool(QObject):
             eid = _pin_instance_id(block)
             if eid is None:
                 return True
-            tpin = pin_item.logical_pin_name()
-            if not _pin_is_free(self._model(), eid, tpin, is_output=False):
+            epin = pin_item.logical_pin_name()
+            if not _pin_is_free(self._model(), eid, epin, is_output=end_out):
                 return True
-            if block is self._src_block and tpin == self._src_pin:
+            if block is self._src_block and epin == self._src_pin:
                 return True
-            self._complete_to_block(block, tpin)
+            self._finish_at_pin(block, epin, end_pin_is_output=end_out)
             return True
 
         self._commit_corner()
         return True
 
     def _commit_corner(self) -> None:
-        # New connector drawing stores only the first support point.
-        # The last bend is resolved dynamically against the target pin at completion time.
         if self._bends:
             self._phase_h = not self._phase_h
             self._sync_sketch()
@@ -399,25 +513,54 @@ class ConnectorRouteTool(QObject):
         self._phase_h = not self._phase_h
         self._sync_sketch()
 
-    def _complete_to_block(
-        self, dst_block: VariableBlockItem | OperatorBlockItem | FmuBlockItem, target_pin: str
+    def _finish_at_pin(
+        self,
+        end_block: VariableBlockItem | OperatorBlockItem | FmuBlockItem,
+        end_pin: str,
+        *,
+        end_pin_is_output: bool,
     ) -> None:
         assert self._src_block is not None
-        src_id = _pin_instance_id(self._src_block)
-        dst_id = _pin_instance_id(dst_block)
-        if src_id is None or dst_id is None:
+        BlockPin = tuple[VariableBlockItem | OperatorBlockItem | FmuBlockItem, str]
+
+        def pair_source_and_target() -> tuple[BlockPin, BlockPin] | None:
+            if _pin_instance_id(self._src_block) is None or _pin_instance_id(end_block) is None:
+                return None
+            if self._anchor_is_output and not end_pin_is_output:
+                return (self._src_block, self._src_pin), (end_block, end_pin)
+            if not self._anchor_is_output and end_pin_is_output:
+                return (end_block, end_pin), (self._src_block, self._src_pin)
+            return None
+
+        def bends_command(ox: float, oy: float, ix: float, iy: float) -> list[float]:
+            bends = list(self._bends)
+            lx, ly = _endpoint_after_bends(self._sx, self._sy, bends)
+            if self._anchor_is_output:
+                _append_orthogonal_to_target(bends, lx, ly, self._phase_h, ix, iy)
+                return _normalize_final_bends(bends, ix, iy)
+            _append_orthogonal_to_target(bends, lx, ly, self._phase_h, ox, oy)
+            try:
+                poly_io = orthogonal_polyline(self._sx, self._sy, ox, oy, bends)
+                poly_oi = list(reversed(poly_io))
+                enc = encode_bends_from_polyline(ox, oy, ix, iy, poly_oi)
+            except ValueError:
+                enc = []
+            return _normalize_final_bends(enc, ix, iy)
+
+        ends = pair_source_and_target()
+        if ends is None:
             self.cancel()
             return
-        tpt = dst_block.connection_point(target_pin)
-        tx, ty = tpt.x(), tpt.y()
-        bends = list(self._bends)
-        lx, ly = _endpoint_after_bends(self._sx, self._sy, bends)
-        _append_orthogonal_to_target(bends, lx, ly, self._phase_h, tx, ty)
-        bends = _normalize_final_bends(bends, tx, ty)
-
-        src_tok = self._src_block.controller_select_token()
-        dst_tok = dst_block.controller_select_token()
-        cmd = _build_new_connector_command(src_tok, dst_tok, self._src_pin, target_pin, bends)
+        (out_block, out_pin), (in_block, in_pin) = ends
+        o_pt = out_block.connection_point(out_pin)
+        i_pt = in_block.connection_point(in_pin)
+        cmd = _build_new_connector_command(
+            out_block.controller_select_token(),
+            in_block.controller_select_token(),
+            out_pin,
+            in_pin,
+            bends_command(o_pt.x(), o_pt.y(), i_pt.x(), i_pt.y()),
+        )
         self.cancel()
         self.finished.emit(cmd)
 
@@ -447,7 +590,7 @@ class ConnectorRouteTool(QObject):
         name = pin_item.logical_pin_name()
         free = _pin_is_free(self._model(), eid, name, is_output=pin_item.is_output_pin())
         if free:
-            vp.setCursor(_pen_cursor())
+            vp.setCursor(_pen_ready_cursor_for_pin(pin_item, block))
         else:
             self._view._cursor_hint_empty_canvas(viewport_pos)
 

@@ -7,25 +7,31 @@ name = "synarius-studio"
 version = "0.0.37"
 description = "PySide6 GUI for Synarius."
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11,<3.15"
 license = { file = "LICENSE" }
 authors = [{ name = "Synarius Contributors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
   "PySide6>=6.0.0",
   "platformdirs>=4.0.0",
   # Shared file logging / excepthook / Qt message handler (sibling: pip install -e ../synarius-apps).
-  "synarius-apps @ git+https://github.com/synarius-project/synarius-apps.git",
+  "synarius-apps @ file:../synarius-apps",
   # Parameters repository (synarius_core.parameters) uses DuckDB; pin here so Studio venv
   # always has it even if the pinned synarius-core git revision predates this dependency.
   "duckdb>=1.5.1",
+  # SynariusController uses immutables.Map; declare here so a stale editable core install
+  # or PYTHONPATH-only setups still resolve the dependency in the Studio venv.
+  "immutables>=0.20",
   # Core re-exports synarius_core.io (timeseries); that optional extra pulls numpy/pandas/pyarrow/asammdf.
   # Must match synarius-apps’ synarius-core pin (pip cannot install two git revs of one name).
-  "synarius-core[timeseries,fmu] @ git+https://github.com/synarius-project/synarius-core.git@2037d854ce4f00b46200d92af1728267248af3ee",
+  "synarius-core[timeseries,fmu] @ file:../synarius-core",
 ]
 
 [project.scripts]
@@ -50,7 +56,10 @@ synarius_studio = ["resources/*.syn", "diagram/svg/*.svg", "icons/*"]
 extraPaths = ["../synarius-core/src", "../synarius-apps/src"]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
 docs = [
   "sphinx",
   "sphinx-needs",

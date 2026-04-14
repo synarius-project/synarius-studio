@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.controller import MinimalController
+from synarius_core.controller import SynariusController
 from synarius_core.library import ParsedElement, ParsedLibrary
 
 from .diagram.placement_interactive import LIBRARY_ELEMENT_DRAG_MIME
@@ -101,7 +101,7 @@ class DraggableLibraryElementIcon(QLabel):
         drag = QDrag(self)
         md = QMimeData()
         md.setData(LIBRARY_ELEMENT_DRAG_MIME, self._type_key.encode("utf-8"))
-        drag.setMimeData(drag)
+        drag.setMimeData(md)
         drag.setPixmap(self.pixmap())
         drag.setHotSpot(self._drag_start)
         drag.exec(Qt.DropAction.CopyAction)
@@ -239,7 +239,7 @@ def _build_library_icons_grid(
     return grid_host
 
 
-def build_resources_panel(controller: MinimalController, parent: QWidget | None = None) -> QWidget:
+def build_resources_panel(controller: SynariusController, parent: QWidget | None = None) -> QWidget:
     """Scrollable panel (canvas-toned): one collapsible section per loaded FMF library."""
     outer = QWidget(parent)
     outer.setFixedWidth(RESOURCES_PANEL_FIXED_WIDTH)

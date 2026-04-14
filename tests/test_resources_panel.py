@@ -13,14 +13,14 @@ class ResourcesPanelTest(unittest.TestCase):
     def test_build_panel_lists_std_icons(self) -> None:
         from PySide6.QtWidgets import QApplication
 
-        from synarius_core.controller import MinimalController
+        from synarius_core.controller import SynariusController
         from synarius_studio.resources_panel import build_resources_panel
 
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv)
 
-        ctl = MinimalController()
+        ctl = SynariusController()
         panel = build_resources_panel(ctl)
         self.assertIsNotNone(panel)
         # CI / minimal wheels may omit Lib/std from synarius-core; panel still builds.

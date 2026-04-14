@@ -1475,22 +1475,60 @@ def _build_rounded_orthogonal_path(
     return path
 
 
+def _dedupe_consecutive_points(points: list[QPointF], *, eps: float = 1e-6) -> list[QPointF]:
+    """Drop consecutive duplicate vertices (common after snapping)."""
+    if not points:
+        return []
+    out: list[QPointF] = [points[0]]
+    for p in points[1:]:
+        if math.hypot(p.x() - out[-1].x(), p.y() - out[-1].y()) <= eps:
+            continue
+        out.append(p)
+    return out
+
+
+def _collapse_collinear_axis_aligned(points: list[QPointF]) -> list[QPointF]:
+    """
+    Remove intermediate vertices that lie on the same horizontal or vertical segment.
+
+    ``_rounded_orthogonal_chain`` uses quadratic fillets at every interior point; if three
+    consecutive points are collinear (straight H or V run), the fillet degenerates into a
+    visible wiggle — especially noticeable on the in-progress connector sketch.
+    """
+    if len(points) <= 2:
+        return list(points)
+    pts = [QPointF(p) for p in points]
+    changed = True
+    while changed and len(pts) >= 3:
+        changed = False
+        for i in range(len(pts) - 2):
+            p0, p1, p2 = pts[i], pts[i + 1], pts[i + 2]
+            horiz = abs(p0.y() - p1.y()) <= 1e-6 and abs(p1.y() - p2.y()) <= 1e-6
+            vert = abs(p0.x() - p1.x()) <= 1e-6 and abs(p1.x() - p2.x()) <= 1e-6
+            if horiz or vert:
+                pts.pop(i + 1)
+                changed = True
+                break
+    return pts
+
+
 def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QPainterPath:
     """Axis-aligned polyline with small quadratic fillets at interior corners."""
     path = QPainterPath()
-    n = len(points)
+    cleaned = _collapse_collinear_axis_aligned(_dedupe_consecutive_points(points))
+    n = len(cleaned)
     if n == 0:
         return path
     if n == 1:
-        path.moveTo(points[0])
+        path.moveTo(cleaned[0])
         return path
     if n == 2:
-        path.moveTo(points[0])
-        path.lineTo(points[1])
+        path.moveTo(cleaned[0])
+        path.lineTo(cleaned[1])
         return path
-    path.moveTo(points[0])
+    path.moveTo(cleaned[0])
     for i in range(1, n - 1):
-        p0, p1, p2 = points[i - 1], points[i], points[i + 1]
+        p0, p1, p2 = cleaned[i - 1], cleaned[i], cleaned[i + 1]
         dx1 = p1.x() - p0.x()
         dy1 = p1.y() - p0.y()
         dx2 = p2.x() - p1.x()
@@ -1510,7 +1548,7 @@ def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QP
         c2y = p1.y() + uy2 * r
         path.lineTo(QPointF(c1x, c1y))
         path.quadTo(p1, QPointF(c2x, c2y))
-    path.lineTo(points[-1])
+    path.lineTo(cleaned[-1])
     return path
 
 

@@ -40,31 +40,28 @@ set @main.last_selected_dataviewer_id 1
 # --- Non-trivial stimulation setup ---
 # vtx_a: sine(offset=0, amplitude=1.3, freq=0.35Hz, phase=0deg)
 set vtx_a.stim_kind sine
-set vtx_a.stim_p0 0
-set vtx_a.stim_p1 1.3
-set vtx_a.stim_p2 0.35
-set vtx_a.stim_p3 0
+set vtx_a.stim_sine_offset 0
+set vtx_a.stim_sine_amplitude 1.3
+set vtx_a.stim_sine_frequency_hz 0.35
+set vtx_a.stim_sine_phase_deg 0
 
 # vtx_b: ramp(offset=-1, slope=0.45)
 set vtx_b.stim_kind ramp
-set vtx_b.stim_p0 -1
-set vtx_b.stim_p1 0.45
-set vtx_b.stim_p2 0
-set vtx_b.stim_p3 0
+set vtx_b.stim_ramp_offset -1
+set vtx_b.stim_ramp_slope 0.45
 
 # vtx_c: step(low=0.2, switch_t=3.2s, high=1.6)
 set vtx_c.stim_kind step
-set vtx_c.stim_p0 0.2
-set vtx_c.stim_p1 3.2
-set vtx_c.stim_p2 1.6
-set vtx_c.stim_p3 0
+set vtx_c.stim_step_low 0.2
+set vtx_c.stim_step_switch_time_s 3.2
+set vtx_c.stim_step_high 1.6
 
 # vtx_d: sine(offset=0.4, amplitude=0.8, freq=0.7Hz, phase=90deg)
 set vtx_d.stim_kind sine
-set vtx_d.stim_p0 0.4
-set vtx_d.stim_p1 0.8
-set vtx_d.stim_p2 0.7
-set vtx_d.stim_p3 90
+set vtx_d.stim_sine_offset 0.4
+set vtx_d.stim_sine_amplitude 0.8
+set vtx_d.stim_sine_frequency_hz 0.7
+set vtx_d.stim_sine_phase_deg 90
 
 # Start in experiment mode.
 set @main.simulation_mode true

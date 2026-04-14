@@ -19,7 +19,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QMessageBox
 
-from synarius_core.controller import MinimalController
+from synarius_core.controller import SynariusController
 from synarius_core.variable_naming import InvalidVariableNameError
 
 from ..theme import SELECTION_HIGHLIGHT_TEXT, selection_highlight_qcolor
@@ -160,7 +160,7 @@ class DataflowGraphicsView(QGraphicsView):
 
         self._route_tool: ConnectorRouteTool | None = None
         self._placement_tool: CanvasPlacementTool | None = None
-        self._controller_for_placement: MinimalController | None = None
+        self._controller_for_placement: SynariusController | None = None
         self._eat_next_left_release_for_route = False
         self._interaction_locked = False
         self._deferred_scene_left_release_timer = QTimer(self)
@@ -182,14 +182,14 @@ class DataflowGraphicsView(QGraphicsView):
             self.viewport().setCursor(self._arrow_cursor)
         self._pan_active = False
 
-    def attach_connector_route_tool(self, controller: MinimalController) -> None:
+    def attach_connector_route_tool(self, controller: SynariusController) -> None:
         """Enable click-to-route connectors (orthogonal H/V) using the given controller model."""
         if self.scene() is None:
             return
         self._route_tool = ConnectorRouteTool(controller, self.scene(), self)
         self._route_tool.finished.connect(self.connector_route_command.emit)
 
-    def attach_placement_tool(self, controller: MinimalController) -> None:
+    def attach_placement_tool(self, controller: SynariusController) -> None:
         if self.scene() is None:
             return
         self._controller_for_placement = controller
@@ -346,6 +346,8 @@ class DataflowGraphicsView(QGraphicsView):
         super().mouseMoveEvent(event)
         if self._route_tool and self._route_tool.active():
             self._route_tool.move_mouse_scene(scene_pos)
+            top = self.itemAt(vp_pos)
+            self._route_tool.update_active_cursor(scene_pos, vp_pos, top)
             return
         if not self.rubberBandRect().isNull():
             return
@@ -379,6 +381,7 @@ class DataflowGraphicsView(QGraphicsView):
             event.button() == Qt.MouseButton.LeftButton
             and self._route_tool is not None
         ):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             vp_pos = event.position().toPoint()
             scene_pos = self.mapToScene(vp_pos)
             top = self.itemAt(vp_pos)
@@ -389,7 +392,10 @@ class DataflowGraphicsView(QGraphicsView):
                 self._emit_block_move_finished_if_uniform()
                 return
             if self._route_tool.try_start_from_release(scene_pos, top):
+                # Route tool handled release; still forward so the pin item receives
+                # mouseRelease after its mousePress (super delivered press in mousePressEvent).
                 event.accept()
+                super().mouseReleaseEvent(event)
                 self._emit_scene_left_release_maybe_skip_selection_sync()
                 self._emit_block_move_finished_if_uniform()
                 return

@@ -14,11 +14,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from synarius_core.dataflow_sim import stimulation as stim
 from synarius_core.model import Variable
 
 
 _STIM_LABELS = (
-    ("none", "None (constant = Variable value; synced with p0 below)"),
+    ("none", "None (uses Variable.value; first field below)"),
     ("constant", "Constant"),
     ("ramp", "Ramp"),
     ("sine", "Sine"),
@@ -35,17 +36,18 @@ def _safe_float(var: Variable, key: str, default: float = 0.0) -> float:
 
 def _safe_kind(var: Variable) -> str:
     try:
-        return str(var.get("stim_kind")).strip().lower()
+        return str(var.get(stim.STIM_KIND_ATTR)).strip().lower()
     except (KeyError, TypeError, ValueError):
         return "none"
 
 
 class StimulationDialog(QDialog):
-    """Maps to ``stim_kind`` / ``stim_p0``…``stim_p3`` (see ``synarius_core.dataflow_sim.stimulation``)."""
+    """Maps to ``stim_kind`` and per-kind attributes (see ``synarius_core.dataflow_sim.stimulation``)."""
 
     def __init__(self, variable: Variable, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._variable = variable
+        stim.ensure_variable_stimulation_schema(variable)
         self.setWindowTitle(f"Stimulation — {variable.name}")
         self.setModal(True)
 
@@ -90,26 +92,48 @@ class StimulationDialog(QDialog):
         idx = next((i for i in range(self._kind.count()) if self._kind.itemData(i) == kind), 0)
         self._kind.setCurrentIndex(idx)
         if kind in ("none", "off", ""):
-            # Unstimulated: dataflow uses ``Variable.value``; older sessions only had stim_p0 in the log.
             try:
                 base_v = float(v.value)
             except (TypeError, ValueError):
-                base_v = _safe_float(v, "stim_p0", 0.0)
+                base_v = _safe_float(v, stim.STIM_CONSTANT_VALUE, 0.0)
             self._p0.setValue(base_v)
+            self._p1.setValue(1.0)
+            self._p2.setValue(1.0)
+            self._p3.setValue(0.0)
+        elif kind == "constant":
+            self._p0.setValue(_safe_float(v, stim.STIM_CONSTANT_VALUE, 0.0))
+            self._p1.setValue(1.0)
+            self._p2.setValue(1.0)
+            self._p3.setValue(0.0)
+        elif kind == "ramp":
+            self._p0.setValue(_safe_float(v, stim.STIM_RAMP_OFFSET, 0.0))
+            self._p1.setValue(_safe_float(v, stim.STIM_RAMP_SLOPE, 1.0))
+            self._p2.setValue(1.0)
+            self._p3.setValue(0.0)
+        elif kind == "sine":
+            self._p0.setValue(_safe_float(v, stim.STIM_SINE_OFFSET, 0.0))
+            self._p1.setValue(_safe_float(v, stim.STIM_SINE_AMPLITUDE, 1.0))
+            self._p2.setValue(_safe_float(v, stim.STIM_SINE_FREQUENCY_HZ, 1.0))
+            self._p3.setValue(_safe_float(v, stim.STIM_SINE_PHASE_DEG, 0.0))
+        elif kind == "step":
+            self._p0.setValue(_safe_float(v, stim.STIM_STEP_LOW, 0.0))
+            self._p1.setValue(_safe_float(v, stim.STIM_STEP_SWITCH_TIME_S, 0.0))
+            self._p2.setValue(_safe_float(v, stim.STIM_STEP_HIGH, 1.0))
+            self._p3.setValue(0.0)
         else:
-            self._p0.setValue(_safe_float(v, "stim_p0", 0.0))
-        self._p1.setValue(_safe_float(v, "stim_p1", 1.0))
-        self._p2.setValue(_safe_float(v, "stim_p2", 1.0))
-        self._p3.setValue(_safe_float(v, "stim_p3", 0.0))
+            self._p0.setValue(0.0)
+            self._p1.setValue(1.0)
+            self._p2.setValue(1.0)
+            self._p3.setValue(0.0)
 
     def _update_param_hints(self) -> None:
         k = self._kind.currentData()
         hints = {
             "none": ("Value (written to Variable.value)", "(unused)", "(unused)", "(unused)"),
-            "constant": ("Value", "(unused)", "(unused)", "(unused)"),
-            "ramp": ("Offset", "Slope (per s)", "(unused)", "(unused)"),
-            "sine": ("Offset", "Amplitude", "Frequency (Hz)", "Phase (deg)"),
-            "step": ("Value before t", "Switch time (s)", "Value after t", "(unused)"),
+            "constant": ("stim_constant_value", "(unused)", "(unused)", "(unused)"),
+            "ramp": ("stim_ramp_offset", "stim_ramp_slope", "(unused)", "(unused)"),
+            "sine": ("stim_sine_offset", "stim_sine_amplitude", "stim_sine_frequency_hz", "stim_sine_phase_deg"),
+            "step": ("stim_step_low", "stim_step_switch_time_s", "stim_step_high", "(unused)"),
         }
         labels = hints.get(str(k), hints["none"])
         for lab, text in zip(self._param_labels, labels):
@@ -120,19 +144,26 @@ class StimulationDialog(QDialog):
         h = shlex.quote(self._variable.hash_name)
         kind = str(self._kind.currentData())
         p0, p1, p2, p3 = self._p0.value(), self._p1.value(), self._p2.value(), self._p3.value()
+        lines = [f"set {h}.{stim.STIM_KIND_ATTR} {kind}"]
         if kind in ("none", "off"):
-            return [
-                f"set {h}.stim_kind {kind}",
-                f"set {h}.value {p0}",
-                f"set {h}.stim_p0 {p0}",
-                f"set {h}.stim_p1 {p1}",
-                f"set {h}.stim_p2 {p2}",
-                f"set {h}.stim_p3 {p3}",
-            ]
-        return [
-            f"set {h}.stim_kind {kind}",
-            f"set {h}.stim_p0 {p0}",
-            f"set {h}.stim_p1 {p1}",
-            f"set {h}.stim_p2 {p2}",
-            f"set {h}.stim_p3 {p3}",
-        ]
+            lines.append(f"set {h}.value {p0}")
+            return lines
+        if kind == "constant":
+            lines.append(f"set {h}.{stim.STIM_CONSTANT_VALUE} {p0}")
+            return lines
+        if kind == "ramp":
+            lines.append(f"set {h}.{stim.STIM_RAMP_OFFSET} {p0}")
+            lines.append(f"set {h}.{stim.STIM_RAMP_SLOPE} {p1}")
+            return lines
+        if kind == "sine":
+            lines.append(f"set {h}.{stim.STIM_SINE_OFFSET} {p0}")
+            lines.append(f"set {h}.{stim.STIM_SINE_AMPLITUDE} {p1}")
+            lines.append(f"set {h}.{stim.STIM_SINE_FREQUENCY_HZ} {p2}")
+            lines.append(f"set {h}.{stim.STIM_SINE_PHASE_DEG} {p3}")
+            return lines
+        if kind == "step":
+            lines.append(f"set {h}.{stim.STIM_STEP_LOW} {p0}")
+            lines.append(f"set {h}.{stim.STIM_STEP_SWITCH_TIME_S} {p1}")
+            lines.append(f"set {h}.{stim.STIM_STEP_HIGH} {p2}")
+            return lines
+        return lines

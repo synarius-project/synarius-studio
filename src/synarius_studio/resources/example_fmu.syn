@@ -2,16 +2,19 @@
 # The FMU is bundled in ``resources/third_party/bouncing_ball/BouncingBall.fmu``.
 # Gravity parameter ``g`` is wired from ``bb_g`` with constant stimulation -9.81 m/s² (Modelica sign).
 # Diagram: ``new Variable x y s`` / ``new FmuInstance … x y s`` use absolute model coordinates.
-# Console ``set -p @selection position dx dy`` applies a delta (see minimal_controller._apply_position_delta).
+# Console ``set -p @selection position dx dy`` applies a delta (see synarius_controller._apply_position_delta).
+#
+# ``fmu_ports`` / ``fmu_variables`` need not be listed: during ``load`` the controller reads the archive
+# and fills ``pin.*`` and ``fmu.variables`` (same merge as ``sync``) when those kwargs are omitted or empty.
 
-new FmuInstance bb 187.5 82.5 1 fmu_path=third_party/bouncing_ball/BouncingBall.fmu fmu_ports='[{"name":"h","value_reference":1,"causality":"output","variability":"continuous","data_type":"float"},{"name":"v","value_reference":3,"causality":"output","variability":"continuous","data_type":"float"},{"name":"g","value_reference":5,"causality":"parameter","variability":"fixed","data_type":"float"},{"name":"e","value_reference":6,"causality":"parameter","variability":"tunable","data_type":"float"}]' fmu_variables='[{"name":"time","value_reference":0,"causality":"independent","variability":"continuous","data_type":"float"},{"name":"h","value_reference":1,"causality":"output","variability":"continuous","data_type":"float"},{"name":"der(h)","value_reference":2,"causality":"local","variability":"continuous","data_type":"float"},{"name":"v","value_reference":3,"causality":"output","variability":"continuous","data_type":"float"},{"name":"der(v)","value_reference":4,"causality":"local","variability":"continuous","data_type":"float"},{"name":"g","value_reference":5,"causality":"parameter","variability":"fixed","data_type":"float"},{"name":"e","value_reference":6,"causality":"parameter","variability":"tunable","data_type":"float"},{"name":"v_min","value_reference":7,"causality":"local","variability":"constant","data_type":"float"}]'
+new FmuInstance bb 187.5 52.5 1 fmu_path=third_party/bouncing_ball/BouncingBall.fmu
 
 # Parameter ``g`` (left of ``bb``): constant stimulation matches typical earth gravity for this FMU.
 # Placed as after ``set -p @selection position -37.5 52.5`` from initial (52.5, 82.5) → (15, 135).
 new Variable bb_g 15 135 1
 new Connector bb_g bb source_pin=out target_pin=g
 set bb_g.stim_kind constant
-set bb_g.stim_p0 -9.81
+set bb_g.stim_constant_value -9.81
 set bb_g.value -9.81
 
 # Output carrier variables (to visualize key FMU outputs in the diagram + DataViewer).

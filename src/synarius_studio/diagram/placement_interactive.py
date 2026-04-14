@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from synarius_core.controller import MinimalController
+from synarius_core.controller import SynariusController
 from synarius_core.model import BasicOperator, BasicOperatorType, Model, Variable
 from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.variable_naming import InvalidVariableNameError, validate_python_variable_name
@@ -125,7 +125,7 @@ def _pick_unique_name(existing: set[str], base: str) -> str:
     return f"{base}_{n}"
 
 
-def library_element_drop_command(controller: MinimalController, type_key: str, scene_pos: QPointF) -> str | None:
+def library_element_drop_command(controller: SynariusController, type_key: str, scene_pos: QPointF) -> str | None:
     """
     Build a ``new`` command for a Resource tile dropped on the diagram, or ``None`` if unsupported.
 

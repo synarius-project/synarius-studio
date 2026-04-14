@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PySide6.QtWidgets import QApplication, QGraphicsScene  # noqa: E402
 
-from synarius_core.controller import MinimalController  # noqa: E402
+from synarius_core.controller import SynariusController  # noqa: E402
 from synarius_core.model import Connector  # noqa: E402
 from synarius_studio.diagram.dataflow_layout import (  # noqa: E402
     default_sample_syn_path,
@@ -32,7 +32,7 @@ class DataflowLayoutTest(unittest.TestCase):
     def test_populate_from_bundled_syn(self) -> None:
         path = default_sample_syn_path()
         self.assertTrue(path.is_file(), msg=f"missing {path}")
-        ctl = MinimalController()
+        ctl = SynariusController()
         ctl.execute(f'load "{path}"')
         scene = QGraphicsScene()
         populate_scene_from_model(

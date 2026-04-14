@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication
 
 
 def _rgb_hex_scale(hex_rgb: str, factor: float) -> str:
@@ -114,3 +120,43 @@ def studio_toolbar_stylesheet(*, background_color: str | None = None) -> str:
         f"QToolBar QToolButton::menu-indicator {{ image: none; width: 0px; height: 0px; }}"
         + studio_tooltip_stylesheet()
     )
+
+
+def apply_dark_palette(app: QApplication) -> None:
+    """Force a dark QPalette on *app* regardless of the OS color scheme.
+
+    Must be called after ``app.setStyle("Fusion")``; Fusion fully respects the
+    application palette, so this overrides any OS light/dark preference.
+    The highlight color is taken from ``STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND``
+    to keep the palette consistent with the existing toolbar chrome.
+    """
+    hl = QColor(STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND)
+
+    p = QPalette()
+
+    # --- Active / Normal color group -----------------------------------------
+    p.setColor(QPalette.ColorRole.Window,          QColor(53, 53, 53))
+    p.setColor(QPalette.ColorRole.WindowText,      Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.Base,            QColor(35, 35, 35))
+    p.setColor(QPalette.ColorRole.AlternateBase,   QColor(53, 53, 53))
+    p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(25, 25, 25))
+    p.setColor(QPalette.ColorRole.ToolTipText,     Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.Text,            Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.Button,          QColor(53, 53, 53))
+    p.setColor(QPalette.ColorRole.ButtonText,      Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.BrightText,      Qt.GlobalColor.red)
+    p.setColor(QPalette.ColorRole.Link,            QColor(42, 130, 218))
+    p.setColor(QPalette.ColorRole.Highlight,       hl)
+    p.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.PlaceholderText, QColor(140, 140, 140))
+
+    # --- Disabled color group -------------------------------------------------
+    disabled = QPalette.ColorGroup.Disabled
+    grey = QColor(127, 127, 127)
+    p.setColor(disabled, QPalette.ColorRole.WindowText,      grey)
+    p.setColor(disabled, QPalette.ColorRole.Text,            grey)
+    p.setColor(disabled, QPalette.ColorRole.ButtonText,      grey)
+    p.setColor(disabled, QPalette.ColorRole.Highlight,       QColor(80, 80, 80))
+    p.setColor(disabled, QPalette.ColorRole.HighlightedText, grey)
+
+    app.setPalette(p)

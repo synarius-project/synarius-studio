@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from synarius_core.controller import MinimalController
+from synarius_core.controller import SynariusController
 
 from .diagram.placement_interactive import VARIABLE_NAME_DRAG_MIME
 from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, RESOURCES_PANEL_SIDE_MARGIN
@@ -57,7 +57,7 @@ class _VariablesDragTable(QTableWidget):
 class VariablesTabPanel(QWidget):
     """Variable / Instances table with the same strip header style as library sections."""
 
-    def __init__(self, controller: MinimalController, parent: QWidget | None = None) -> None:
+    def __init__(self, controller: SynariusController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
         self.setFixedWidth(RESOURCES_PANEL_FIXED_WIDTH)
@@ -130,5 +130,5 @@ class VariablesTabPanel(QWidget):
             self._table.setItem(i, 1, count_item)
 
 
-def build_variables_tab_panel(controller: MinimalController, parent: QWidget | None = None) -> VariablesTabPanel:
+def build_variables_tab_panel(controller: SynariusController, parent: QWidget | None = None) -> VariablesTabPanel:
     return VariablesTabPanel(controller, parent)
