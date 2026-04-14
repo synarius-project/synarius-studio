@@ -12,14 +12,12 @@ env:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
         run: |
-          cd "$GITHUB_WORKSPACE"
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          cd "$parent"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - name: Install Qt / EGL libs (PySide6 on headless Linux)

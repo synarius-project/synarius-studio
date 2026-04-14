@@ -10,15 +10,13 @@ env:
 jobs:
   windows-onedir-smoke:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: synarius-studio
     steps:
       - uses: actions/checkout@v5
       - name: "Clone sibling repos (pyproject.toml file: dependencies)"
         shell: bash
         run: |
-          cd "$GITHUB_WORKSPACE"
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          cd "$parent"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - uses: actions/setup-python@v6
@@ -40,12 +38,12 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: pyinstaller-onedir
-          path: synarius-studio/dist/synarius-studio/**
+          path: dist/synarius-studio/**
       - name: Upload PyInstaller diagnostics
         uses: actions/upload-artifact@v5
         with:
           name: pyinstaller-diagnostics-smoke
           path: |
-            synarius-studio/build/**/warn-*.txt
-            synarius-studio/build/**/xref-*.html
+            build/**/warn-*.txt
+            build/**/xref-*.html
           if-no-files-found: warn
