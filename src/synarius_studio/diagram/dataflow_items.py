@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from synarius_core.dataflow_sim._std_type_keys import STD_ARITHMETIC_OP, STD_PARAM_LOOKUP
 from synarius_core.model import (
     BasicOperator,
     BasicOperatorType,
@@ -181,6 +182,9 @@ VARIABLE_WIDTH = 6.0 * MODULE  # default / minimum; instance width from ``variab
 OPERATOR_SIZE = 3.0 * MODULE
 _GLYPH_BASE = OPERATOR_SIZE * (40.0 / 56.0)
 SVG_SYMBOL_SIZE = _GLYPH_BASE * 1.2
+# Lookup blocks (Kennlinie, Kennfeld): larger square optimised for 32 × 32 icon rendering.
+LOOKUP_BLOCK_SIZE = 6.0 * MODULE
+LOOKUP_ICON_SIZE = 40.0
 
 # Match connector edges (stroke weight). Block outlines are 2× this.
 CONNECTOR_LINE_WIDTH = 1.35
@@ -982,6 +986,68 @@ class _ElementaryLibHeaderGraphicSlot(QGraphicsRectItem):
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
 
+def _elementary_diagram_icon_path(elementary: ElementaryInstance) -> str | None:
+    """Return the absolute icon path seeded from the library, or ``None``."""
+    try:
+        v = elementary.attribute_dict["diagram.icon_path"]
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _elementary_diagram_show_pin_names(elementary: ElementaryInstance) -> bool:
+    """Return ``False`` when the library element has requested hidden pin labels."""
+    try:
+        v = elementary.attribute_dict["diagram.show_pin_names"]
+        if v == "false" or v is False:
+            return False
+    except (KeyError, TypeError, ValueError):
+        pass
+    return True
+
+
+# Mapping from STD_ARITHMETIC_OP symbol → BasicOperatorType for compact icon-mode glyph reuse.
+_STD_OP_TO_BASIC_OP_TYPE: dict[str, BasicOperatorType] = {
+    "+": BasicOperatorType.PLUS,
+    "-": BasicOperatorType.MINUS,
+    "*": BasicOperatorType.MULTIPLY,
+    "/": BasicOperatorType.DIVIDE,
+}
+
+
+class _LibDiagramIconItem(QGraphicsRectItem):
+    """SVG icon slot for a library element in compact icon mode (renders file via QSvgRenderer)."""
+
+    def __init__(self, icon_path: str, size: float, parent: QGraphicsItem | None = None) -> None:
+        super().__init__(0.0, 0.0, size, size, parent)
+        self._icon_path = icon_path
+        self._renderer: object | None = None
+        self.setBrush(Qt.BrushStyle.NoBrush)
+        self.setPen(QPen(Qt.PenStyle.NoPen))
+        self.setZValue(2.0)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        if self._renderer is None:
+            try:
+                from PySide6.QtSvg import QSvgRenderer
+
+                r = QSvgRenderer(self._icon_path)
+                if r.isValid():
+                    self._renderer = r
+            except Exception:
+                return
+        if self._renderer is not None:
+            self._renderer.render(painter, self.rect())  # type: ignore[attr-defined]
+
+
 def _distributed_ys(n: int, y0: float, y1: float) -> list[float]:
     if n <= 0:
         return []
@@ -1022,16 +1088,84 @@ class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         elementary: ElementaryInstance,
         parent: QGraphicsRectItem | None = None,
     ) -> None:
-        ins, outs, n_in, n_out, pin_rows = self.__init_sorted_pins(elementary)
-        geo = self.__init_block_geometry(elementary, pin_rows, ins, outs)
-        super().__init__(0, 0, geo.block_w, geo.block_h, parent)
-        self._el = elementary
-        self._pins: dict[str, _InputPinItem | _OutputPinItem] = {}
-        self._pin_labels: dict[str, QGraphicsSimpleTextItem] = {}
-        self._header_graphic: _ElementaryLibHeaderGraphicSlot | None = None
-        self.__init_frame_appearance()
-        self.__init_header_labels(geo)
-        self.__init_pin_widgets(ins, outs, n_in, n_out, geo)
+        std_sym = STD_ARITHMETIC_OP.get(elementary.type_key)
+        icon_path = _elementary_diagram_icon_path(elementary)
+
+        if std_sym is not None or (icon_path is not None and elementary.type_key not in STD_PARAM_LOOKUP):
+            # --- COMPACT ICON MODE (OPERATOR_SIZE square, glyph, no labels) ---
+            super().__init__(0, 0, OPERATOR_SIZE, OPERATOR_SIZE, parent)
+            self._el = elementary
+            self._pins: dict[str, _InputPinItem | _OutputPinItem] = {}
+            self._pin_labels: dict[str, QGraphicsSimpleTextItem] = {}
+            self._header_graphic: _ElementaryLibHeaderGraphicSlot | None = None
+            self.setBrush(DIAGRAM_BLOCK_FILL)
+            self.setPen(_block_outline_pen(QColor(45, 45, 45)))
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+            self.setAcceptHoverEvents(True)
+            # Hidden name label (kept for attribute compatibility)
+            self._label = QGraphicsSimpleTextItem("", self)
+            self._label.setVisible(False)
+            self._sub_label: QGraphicsSimpleTextItem | None = None
+            # Glyph: prefer hardcoded vector for known std ops (pixel-perfect match with OperatorBlockItem)
+            if std_sym is not None:
+                op_type = _STD_OP_TO_BASIC_OP_TYPE[std_sym]
+                glyph: QGraphicsRectItem = _OperatorGlyphItem(op_type, SVG_SYMBOL_SIZE, self)
+            else:
+                assert icon_path is not None
+                glyph = _LibDiagramIconItem(icon_path, SVG_SYMBOL_SIZE, self)
+            glyph.setPos(
+                (OPERATOR_SIZE - SVG_SYMBOL_SIZE) / 2,
+                (OPERATOR_SIZE - SVG_SYMBOL_SIZE) / 2,
+            )
+            self.__init_compact_pins(elementary)
+        elif elementary.type_key == "std.Kennwert":
+            # --- KENNWERT: variable-style block, output pin only ---
+            block_w = variable_diagram_block_width_scene(elementary.name)
+            super().__init__(0, 0, block_w, VARIABLE_HEIGHT, parent)
+            self._el = elementary
+            self._pins = {}
+            self._pin_labels = {}
+            self._header_graphic = None
+            self.setBrush(DIAGRAM_BLOCK_FILL)
+            self.setPen(_block_outline_pen(QColor(55, 55, 55)))
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+            self.setAcceptHoverEvents(True)
+            self._sub_label = None
+            self.__init_kennwert_label(elementary.name, block_w)
+            pin_out = _OutputPinItem(self)
+            pin_out.setPos(block_w, VARIABLE_HEIGHT / 2.0)
+            self._pins["out"] = pin_out
+        elif elementary.type_key in STD_PARAM_LOOKUP:
+            # --- LOOKUP BLOCK (Kennlinie / Kennfeld): large square, icon + name, symmetric pins ---
+            super().__init__(0, 0, LOOKUP_BLOCK_SIZE, LOOKUP_BLOCK_SIZE, parent)
+            self._el = elementary
+            self._pins = {}
+            self._pin_labels = {}
+            self._header_graphic = None
+            self.setBrush(DIAGRAM_BLOCK_FILL)
+            self.setPen(_block_outline_pen(QColor(45, 45, 45)))
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+            self.setAcceptHoverEvents(True)
+            self._sub_label = None
+            self.__init_lookup_block(elementary, icon_path)
+        else:
+            # --- NORMAL FMU BLOCK MODE ---
+            ins, outs, n_in, n_out, pin_rows = self.__init_sorted_pins(elementary)
+            geo = self.__init_block_geometry(elementary, pin_rows, ins, outs)
+            super().__init__(0, 0, geo.block_w, geo.block_h, parent)
+            self._el = elementary
+            self._pins = {}
+            self._pin_labels = {}
+            self._header_graphic = None
+            self.__init_frame_appearance()
+            self.__init_header_labels(geo)
+            self.__init_pin_widgets(ins, outs, n_in, n_out, geo)
 
     @staticmethod
     def __init_sorted_pins(
@@ -1042,6 +1176,100 @@ class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         n_in, n_out = len(ins), len(outs)
         pin_rows = max(n_in, n_out, 1)
         return ins, outs, n_in, n_out, pin_rows
+
+    def __init_compact_pins(self, elementary: ElementaryInstance) -> None:
+        """Place pins for compact icon mode: distributed vertically on left/right edges."""
+        ins = sorted(elementary.in_pins, key=lambda p: p.name)
+        outs = sorted(elementary.out_pins, key=lambda p: p.name)
+        y0 = 0.5 * MODULE
+        y1 = OPERATOR_SIZE - 0.5 * MODULE
+        for p, py in zip(ins, _distributed_ys(len(ins), y0, y1)):
+            pin_it = _InputPinItem(p.name, self)
+            pin_it.setPos(0.0, py)
+            self._pins[p.name] = pin_it
+        for p, py in zip(outs, _distributed_ys(len(outs), y0, y1)):
+            pin_it = _OutputPinItem(self, logical_name=p.name)
+            pin_it.setPos(OPERATOR_SIZE, py)
+            self._pins[p.name] = pin_it
+
+    def __init_kennwert_label(self, name: str, block_w: float) -> None:
+        """Centered name label for the Kennwert (variable-style) block."""
+        font = _font_for_variable_name(name, block_w, VARIABLE_HEIGHT)
+        lbl = QGraphicsSimpleTextItem(name, self)
+        lbl.setFont(font)
+        lbl.setBrush(QColor(30, 30, 30))
+        lbl.setZValue(2.0)
+        lbl.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        fm = QFontMetricsF(font)
+        br = lbl.boundingRect()
+        text_w = fm.horizontalAdvance(name)
+        x = (block_w - text_w) / 2
+        y = (VARIABLE_HEIGHT - br.height()) / 2 - 0.45 * fm.descent()
+        lbl.setPos(x, y)
+        self._label = lbl
+
+    def __init_lookup_block(self, elementary: ElementaryInstance, icon_path: str | None) -> None:
+        """Large square block for Kennlinie / Kennfeld: 32 px icon + name at bottom, symmetric pins."""
+        size = LOOKUP_BLOCK_SIZE
+        name = elementary.name
+
+        # --- name label (bottom-inside) ---
+        label_font = QFont()
+        label_font.setPixelSize(max(8, int(MODULE * 0.9)))
+        lbl = QGraphicsSimpleTextItem(name, self)
+        lbl.setFont(label_font)
+        lbl.setBrush(QColor(30, 30, 30))
+        lbl.setZValue(2.0)
+        lbl.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        label_fm = QFontMetricsF(label_font)
+        label_br = lbl.boundingRect()
+        label_w = label_fm.horizontalAdvance(name)
+        bottom_margin = 0.35 * MODULE
+        label_y = size - bottom_margin - label_br.height() - 0.45 * label_fm.descent()
+        lbl.setPos((size - label_w) / 2, label_y)
+        self._label = lbl
+
+        # --- icon (centered in the upper portion above the label) ---
+        if icon_path:
+            top_margin = 0.5 * MODULE
+            upper_area_h = label_y - top_margin
+            icon_y = top_margin + max(0.0, (upper_area_h - LOOKUP_ICON_SIZE) / 2)
+            icon_x = (size - LOOKUP_ICON_SIZE) / 2
+            icon_item = _LibDiagramIconItem(icon_path, LOOKUP_ICON_SIZE, self)
+            icon_item.setPos(icon_x, icon_y)
+
+        # --- pins: symmetric about vertical centre ---
+        ins = sorted(elementary.in_pins, key=lambda p: p.name)
+        outs = sorted(elementary.out_pins, key=lambda p: p.name)
+        cy = size / 2.0
+        n_in = len(ins)
+        pin_half_span = MODULE * max(1, n_in - 1)
+        in_ys = _distributed_ys(n_in, cy - pin_half_span, cy + pin_half_span)
+
+        pin_font = QFont()
+        pin_font.setPixelSize(max(7, int(MODULE * 0.8)))
+        pin_fm = QFontMetricsF(pin_font)
+
+        for p, py in zip(ins, in_ys):
+            pin_it = _InputPinItem(p.name, self)
+            pin_it.setPos(0.0, py)
+            self._pins[p.name] = pin_it
+            # Label inside the block next to the pin
+            lbl = QGraphicsSimpleTextItem(p.name, self)
+            lbl.setFont(pin_font)
+            lbl.setBrush(QColor(55, 55, 55))
+            lbl.setZValue(2.0)
+            lbl.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            lbl_h = lbl.boundingRect().height()
+            lbl.setPos(BLOCK_OUTLINE_WIDTH + 1.5, py - lbl_h / 2.0)
+            self._pin_labels[p.name] = lbl
+
+        out_ys = _distributed_ys(len(outs), cy - MODULE * max(0, len(outs) - 1),
+                                  cy + MODULE * max(0, len(outs) - 1))
+        for p, py in zip(outs, out_ys):
+            pin_it = _OutputPinItem(self, logical_name=p.name)
+            pin_it.setPos(size, py)
+            self._pins[p.name] = pin_it
 
     @staticmethod
     def __init_block_geometry(

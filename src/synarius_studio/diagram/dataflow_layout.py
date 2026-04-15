@@ -11,6 +11,7 @@ from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import QGraphicsScene
 
 from synarius_core.dataflow_sim import elementary_has_fmu_path
+from synarius_core.dataflow_sim._std_type_keys import STD_ARITHMETIC_OP, STD_PARAM_LOOKUP
 from synarius_core.model import BasicOperator, Connector, DataViewer, ElementaryInstance, Model, Variable
 
 from .dataflow_items import (
@@ -98,6 +99,20 @@ def populate_scene_from_model(
             item = DataViewerBlockItem(child)
             item.setPos(pos[0], pos[1])
             scene.addItem(item)
+        elif isinstance(child, ElementaryInstance) and child.type_key in STD_ARITHMETIC_OP:
+            pos = (child.x * UI_SCALE, child.y * UI_SCALE)
+            item = FmuBlockItem(child)
+            item.setPos(pos[0], pos[1])
+            scene.addItem(item)
+            if child.id is not None:
+                id_to_item[child.id] = item
+        elif isinstance(child, ElementaryInstance) and child.type_key in STD_PARAM_LOOKUP:
+            pos = (child.x * UI_SCALE, child.y * UI_SCALE)
+            item = FmuBlockItem(child)
+            item.setPos(pos[0], pos[1])
+            scene.addItem(item)
+            if child.id is not None:
+                id_to_item[child.id] = item
         elif isinstance(child, ElementaryInstance) and elementary_has_fmu_path(child):
             pos = (child.x * UI_SCALE, child.y * UI_SCALE)
             item = FmuBlockItem(child)

@@ -38,6 +38,11 @@ LIBRARY_HEADER_SEPARATOR = "#505050"
 LIBRARY_HEADER_BUTTON_HOVER = "#454545"
 
 
+def qss_widget_id_background(object_name: str, background_hex: str) -> str:
+    """Paint ``background_hex`` only on ``#object_name`` (no bare rules that cascade to QToolTip)."""
+    return f"#{object_name} {{ background-color: {background_hex}; }}"
+
+
 def studio_tab_bar_stylesheet(*, selected_tab_bg: str) -> str:
     """QTabBar wie der Kopfstreifen im Variables-Tab (LIBRARY_HEADER_*); aktiver Tab: ``selected_tab_bg``."""
     hb, ht, hov = LIBRARY_HEADER_BACKGROUND, LIBRARY_HEADER_TEXT, LIBRARY_HEADER_BUTTON_HOVER
@@ -63,6 +68,10 @@ STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND = "#586cd4"
 SELECTION_HIGHLIGHT = STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND
 SELECTION_HIGHLIGHT_ALPHA = 190
 SELECTION_HIGHLIGHT_TEXT = "#ffffff"
+
+# Active-dataset marker in the Parameters tab: same violet as ParaWiz's CCP-select overlay.
+ACTIVE_DATASET_BACKGROUND = "#8b5cf6"
+ACTIVE_DATASET_FOREGROUND = "#ffffff"
 # Toolbar icon buttons: hover/press ramp from active-action hue; combo box keeps gray hover above.
 STUDIO_TOOLBAR_ACTION_HOVER = _rgb_hex_scale(STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND, 0.40)
 STUDIO_TOOLBAR_ACTION_PRESSED = _rgb_hex_scale(STUDIO_TOOLBAR_ACTIVE_ACTION_BACKGROUND, 0.72)
@@ -80,17 +89,42 @@ def selection_highlight_qcolor(*, opaque: bool = False) -> QColor:
 DIAGRAM_SELECTION_OVERHANG_PX = 3.5
 DIAGRAM_SELECTION_HALO_CORNER_RADIUS_PX = 3.0
 
+# Application-wide tooltips (Libs, canvas, dialogs, toolbars). QToolTip is a separate window and
+# does not inherit QToolBar stylesheets — use these constants for QSS + QPalette together.
+STUDIO_TOOLTIP_FOREGROUND = "#ffffff"
+STUDIO_TOOLTIP_BACKGROUND = "#2b2b2b"
+STUDIO_TOOLTIP_BORDER = "#5a5a5a"
+STUDIO_TOOLTIP_PADDING = "4px 6px"
+
+# Pre-built QToolTip rule — single source of truth used by all widget-level stylesheets.
+#
+# Background: Qt resolves QToolTip styling from the *nearest ancestor* (including the widget
+# itself) that has a non-empty styleSheet().  If that ancestor's stylesheet lacks a QToolTip
+# rule, Qt falls back to OS-native tooltip styling — ignoring the app-level stylesheet set in
+# apply_dark_palette().  Therefore every widget that calls setStyleSheet() AND hosts tooltips
+# (directly or via child items/actions) must include TOOLTIP_QSS.  Use with_tooltip_qss() as
+# the canonical way to do this.
+TOOLTIP_QSS = (
+    f"QToolTip {{ color: {STUDIO_TOOLTIP_FOREGROUND} !important; "
+    f"background-color: {STUDIO_TOOLTIP_BACKGROUND} !important; "
+    f"border: 1px solid {STUDIO_TOOLTIP_BORDER} !important; "
+    f"padding: {STUDIO_TOOLTIP_PADDING} !important; }}"
+)
+
 
 def studio_tooltip_stylesheet() -> str:
-    """Central tooltip style used by all Studio toolbars."""
-    return (
-        "QToolTip {"
-        " color: #ffffff;"
-        " background-color: #2b2b2b;"
-        " border: 1px solid #5a5a5a;"
-        " padding: 4px 6px;"
-        " }"
-    )
+    """QToolTip rules for the whole Studio app (applied on ``QApplication``)."""
+    return TOOLTIP_QSS
+
+
+def with_tooltip_qss(qss: str) -> str:
+    """Append ``TOOLTIP_QSS`` to a widget-level stylesheet.
+
+    Call this whenever you assign a stylesheet to a widget (or a scroll-area ancestor
+    whose viewport hosts tooltipped items) so that Qt uses the app theme rather than
+    OS-native tooltip styling.
+    """
+    return f"{qss} {TOOLTIP_QSS}"
 
 
 def studio_toolbar_stylesheet(*, background_color: str | None = None) -> str:
@@ -118,7 +152,7 @@ def studio_toolbar_stylesheet(*, background_color: str | None = None) -> str:
         f"QToolBar QToolButton:checked {{ background-color: {action_checked}; }}"
         f"QToolBar QToolButton:checked:hover {{ background-color: {action_checked}; }}"
         f"QToolBar QToolButton::menu-indicator {{ image: none; width: 0px; height: 0px; }}"
-        + studio_tooltip_stylesheet()
+        f" {TOOLTIP_QSS}"
     )
 
 
@@ -139,8 +173,8 @@ def apply_dark_palette(app: QApplication) -> None:
     p.setColor(QPalette.ColorRole.WindowText,      Qt.GlobalColor.white)
     p.setColor(QPalette.ColorRole.Base,            QColor(35, 35, 35))
     p.setColor(QPalette.ColorRole.AlternateBase,   QColor(53, 53, 53))
-    p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(25, 25, 25))
-    p.setColor(QPalette.ColorRole.ToolTipText,     Qt.GlobalColor.white)
+    p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(STUDIO_TOOLTIP_BACKGROUND))
+    p.setColor(QPalette.ColorRole.ToolTipText,     QColor(STUDIO_TOOLTIP_FOREGROUND))
     p.setColor(QPalette.ColorRole.Text,            Qt.GlobalColor.white)
     p.setColor(QPalette.ColorRole.Button,          QColor(53, 53, 53))
     p.setColor(QPalette.ColorRole.ButtonText,      Qt.GlobalColor.white)
@@ -160,3 +194,5 @@ def apply_dark_palette(app: QApplication) -> None:
     p.setColor(disabled, QPalette.ColorRole.HighlightedText, grey)
 
     app.setPalette(p)
+    # QToolTip windows do not inherit toolbar QSS; one app-level sheet keeps Libs/canvas/dialogs aligned.
+    app.setStyleSheet(studio_tooltip_stylesheet())

@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .theme import with_tooltip_qss
+
 
 def _white_triangle_icon(*, up: bool, side: int = 11) -> QIcon:
     """Reliable white arrow icons (Qt stylesheets often fail to paint spinbox arrows on Windows)."""
@@ -167,7 +169,7 @@ class _StepCountPopupPanel(QWidget):
 
         btn_w, btn_h = 20, 12
         ic = QSize(12, 9)
-        btn_style = (
+        btn_style = with_tooltip_qss(
             "QToolButton { background: #383838; border: none; border-left: 1px solid #555; "
             "padding: 0; margin: 0; }"
             "QToolButton:hover { background: #484848; }"

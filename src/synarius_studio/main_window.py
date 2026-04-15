@@ -86,11 +86,12 @@ from synarius_core.model import (
     SignalContainer,
     Variable,
 )
+from synarius_core.model.syn_script_export import export_root_diagram_syn_text
 from synarius_core.plugins.registry import PluginRegistry
 from synarius_core.recording import export_recording_buffers
 from synariustools.tools.terminal_console import TerminalConsoleWidget
 
-from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, build_resources_panel
+from .resources_panel import RESOURCES_PANEL_MIN_WIDTH, build_resources_panel
 from .theme import (
     CONSOLE_CHROME_BACKGROUND,
     CONSOLE_TAB_TEXT,
@@ -98,11 +99,14 @@ from .theme import (
     SELECTION_HIGHLIGHT,
     SELECTION_HIGHLIGHT_TEXT,
     STUDIO_TOOLBAR_FOREGROUND,
+    qss_widget_id_background,
     studio_tab_bar_stylesheet,
     studio_toolbar_stylesheet,
+    with_tooltip_qss,
 )
 from .studio_paths import studio_library_extra_roots, studio_lib_dir, studio_plugins_dir
 from .variables_tab_panel import build_variables_tab_panel
+from .parameters_tab_panel import build_parameters_tab_panel
 from .diagram import DataflowGraphicsView, populate_scene_from_model
 from .diagram.dataflow_items import (
     UI_SCALE,
@@ -583,6 +587,7 @@ class MainWindow(QMainWindow):
         self._create_menu()
         self._build_main_layout(root_layout)
         self._variables_panel.refresh()
+        self._parameters_panel.refresh()
         self._dataflow_view.attach_connector_route_tool(self._controller)
         self._dataflow_view.attach_placement_tool(self._controller)
         self._dataflow_view.connector_route_command.connect(self._on_connector_route_command)
@@ -927,14 +932,21 @@ class MainWindow(QMainWindow):
         )
         self._left_tabs = left_tabs
         self._variables_panel = build_variables_tab_panel(self._controller, self)
-        left_tabs.addTab(self._variables_panel, "Variables")
+        self._parameters_panel = build_parameters_tab_panel(
+            self._controller,
+            lambda cmd: self._controller_execute_logged(cmd, source="parameters_panel"),
+            self,
+        )
         self._resources_panel_widget = build_resources_panel(self._controller, self)
-        left_tabs.addTab(self._resources_panel_widget, "Resources")
+        left_tabs.addTab(self._resources_panel_widget, "Librarys")
+        left_tabs.addTab(self._variables_panel, "Elements")
+        left_tabs.addTab(self._parameters_panel, "Parameters")
+        left_tabs.setCurrentWidget(self._resources_panel_widget)
         MainWindow._tab_bar_compact_only_needed(left_tabs)
         _resource_tab_strip_w = max(left_tabs.tabBar().sizeHint().width(), 28)
-        _left_resources_w = RESOURCES_PANEL_FIXED_WIDTH + _resource_tab_strip_w
-        left_tabs.setFixedWidth(_left_resources_w)
-        self._left_resources_split_w = _left_resources_w
+        _left_resources_w = RESOURCES_PANEL_MIN_WIDTH + _resource_tab_strip_w
+        left_tabs.setMinimumWidth(_left_resources_w)
+        left_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         canvas_host = QWidget(self)
         canvas_host.setMinimumWidth(260)
@@ -1123,7 +1135,7 @@ class MainWindow(QMainWindow):
         self.horizontal_split.setStretchFactor(0, 0)
         self.horizontal_split.setStretchFactor(1, 1)
         self.horizontal_split.setStretchFactor(2, 0)
-        self.horizontal_split.setSizes([_left_resources_w, 712, 220])
+        self.horizontal_split.setSizes([_left_resources_w, 712, 220])  # initial; user can drag
 
         root_layout.addWidget(self.horizontal_split, 1)
 
@@ -1204,10 +1216,16 @@ class MainWindow(QMainWindow):
         idx = tabs.indexOf(panel)
         if idx < 0:
             return
+        # removeTab/insertTab can move the current tab (e.g. to Variables); restore selection below.
+        had_focus = tabs.currentWidget()
         tabs.removeTab(idx)
         panel.deleteLater()
         self._resources_panel_widget = build_resources_panel(self._controller, self)
-        tabs.insertTab(idx, self._resources_panel_widget, "Resources")
+        tabs.insertTab(idx, self._resources_panel_widget, "Librarys")
+        if had_focus is panel:
+            tabs.setCurrentWidget(self._resources_panel_widget)
+        elif had_focus is not None:
+            tabs.setCurrentWidget(had_focus)
 
     def _install_extension_zip(self) -> None:
         from synarius_core.plugins.install import install_distribution_archive
@@ -1600,7 +1618,6 @@ class MainWindow(QMainWindow):
                 return
             if result is not None and result != "":
                 self.console.insert_log_before_current_prompt(result, self._get_output_color())
-            self._sync_diagram_view_from_core_after_console(ln)
 
     def _sync_play_actions_checked(self, checked: bool) -> None:
         """Keep internal and canvas Play actions in the same check state without re-entering toggle logic."""
@@ -1637,13 +1654,13 @@ class MainWindow(QMainWindow):
         self, parent: QObject, *, expand_in_toolbar_slot: bool = True
     ) -> QWidgetAction:
         act = QWidgetAction(parent)
-        compact_qss = (
+        compact_qss = with_tooltip_qss(
             "QLineEdit { min-height: 16px; max-height: 16px; font-size: 9px; "
             "padding: 0px 2px; border: 1px solid #666; border-radius: 2px; "
             "background: #262626; color: #f5f5f5; }"
         )
         # Popup uses a composite widget: QSpinBox without native buttons + QToolButtons with painted arrows.
-        popup_qss = (
+        popup_qss = with_tooltip_qss(
             "QSpinBox { min-height: 24px; max-height: 24px; font-size: 12px; "
             "padding: 2px 6px; border: none; background: #262626; color: #f5f5f5; }"
         )
@@ -2683,7 +2700,6 @@ class MainWindow(QMainWindow):
             return False
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
-        self._sync_diagram_view_from_core_after_console(cmd)
         return True
 
     @staticmethod
@@ -2741,7 +2757,6 @@ class MainWindow(QMainWindow):
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
-        self._sync_diagram_view_from_core_after_console(cmd)
 
     def _sync_diagram_view_from_core_after_console(self, command_line: str) -> None:
         """Keep canvas aligned with core model and controller selection after a console command."""
@@ -2756,6 +2771,7 @@ class MainWindow(QMainWindow):
         self._sync_simulation_mode_from_model()
         self._apply_controller_selection_to_scene()
         self._variables_panel.refresh()
+        self._parameters_panel.refresh()
         self._schedule_experiment_codegen_refresh()
 
     def _on_connector_route_command(self, cmd: str) -> None:
@@ -2772,7 +2788,6 @@ class MainWindow(QMainWindow):
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
-        self._sync_diagram_view_from_core_after_console(cmd)
 
     def _on_placement_canvas_command(self, cmd: str) -> None:
         self._uncheck_diagram_palette_actions()
@@ -2841,7 +2856,6 @@ class MainWindow(QMainWindow):
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
-        self._sync_diagram_view_from_core_after_console(cmd)
 
     def _delete_selected_via_controller(self) -> None:
         selected = self._diagram_scene.selectedItems()
@@ -2882,7 +2896,6 @@ class MainWindow(QMainWindow):
             self._controller_execute_logged("select", source="delete")
         except Exception:
             pass
-        self._sync_diagram_view_from_core_after_console(del_cmd)
 
     def _sync_diagram_move_to_controller(self, dx_scene: float, dy_scene: float) -> None:
         """Apply a uniform scene delta to the core via ``set -p @selection position`` (after selection sync)."""
@@ -2903,7 +2916,6 @@ class MainWindow(QMainWindow):
             return
         if result is not None and result != "":
             self.console.insert_log_before_current_prompt(result, self._get_output_color())
-        self._sync_diagram_view_from_core_after_console(cmd)
 
     def _panel_label(self, text: str) -> QWidget:
         widget = QWidget(self)
@@ -2929,7 +2941,8 @@ class MainWindow(QMainWindow):
         )
 
         widget = QWidget(self)
-        widget.setStyleSheet(f"background-color: {RESOURCES_PANEL_BACKGROUND};")
+        widget.setObjectName("syn_experiment_panel_root")
+        widget.setStyleSheet(qss_widget_id_background("syn_experiment_panel_root", RESOURCES_PANEL_BACKGROUND))
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -2977,7 +2990,8 @@ class MainWindow(QMainWindow):
         )
 
         widget = QWidget(self)
-        widget.setStyleSheet(f"background-color: {RESOURCES_PANEL_BACKGROUND};")
+        widget.setObjectName("syn_signals_panel_root")
+        widget.setStyleSheet(qss_widget_id_background("syn_signals_panel_root", RESOURCES_PANEL_BACKGROUND))
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -3413,7 +3427,16 @@ class MainWindow(QMainWindow):
         return n_patched
 
     def _controller_execute_logged(self, cmd: str, *, source: str) -> str | None:
-        """Single entry for ``SynariusController.execute``: every protocol line is logged (file + GUI)."""
+        """Single entry for ``SynariusController.execute``: logs every command and **always** syncs
+        canvas/panels afterwards.
+
+        The sync is guaranteed for both the success path and clean ``CommandError`` failures
+        (where the model is unchanged).  It is intentionally skipped for unexpected exceptions
+        because the model may be in an indeterminate state in that case.
+
+        All callers therefore receive a consistent UI for free — no call site needs to call
+        ``_sync_diagram_view_from_core_after_console`` manually.
+        """
         line = cmd.strip()
         self._ensure_legacy_dataviewer_open_widget_attrs()
         _CMD_LOG.info("command [%s]: %s", source, line)
@@ -3421,10 +3444,13 @@ class MainWindow(QMainWindow):
             result = self._controller.execute(cmd)
         except CommandError as exc:
             _CMD_LOG.error("command [%s] failed: %s | %s", source, line, exc)
+            # Sync even on clean failure: model is unchanged but panels must stay consistent
+            # (e.g. selection state, parameter list).
+            self._sync_diagram_view_from_core_after_console(line)
             raise
         except Exception:
             _CMD_LOG.exception("command [%s] raised: %s", source, line)
-            raise
+            raise  # do NOT sync — model may be in an indeterminate state
         # ``load`` replaces ``self._controller.model`` inside ``execute``; patch again for script lines / next UI cmd.
         first_tok = line.split(None, 1)[0].lower() if line else ""
         if first_tok == "load":
@@ -3438,6 +3464,7 @@ class MainWindow(QMainWindow):
             )
         else:
             _CMD_LOG.info("command [%s] ok: %s", source, line)
+        self._sync_diagram_view_from_core_after_console(line)
         return result
 
 
@@ -3456,6 +3483,64 @@ class MainWindow(QMainWindow):
 
     def _append_console_line(self, text: str, color: str) -> None:
         self.console.append_output(text, color)
+
+    def _request_ok_to_discard_or_save_before_model_replace(self) -> bool:
+        """
+        If the controller undo stack is non-empty, ask whether to save the current diagram first.
+
+        Returns False when the user cancels (load/open shall not proceed). ``load`` already replaces
+        the model and clears undo when executed; this gate only decides whether to run ``load``.
+        """
+        if not self._controller.has_undoable_changes():
+            return True
+        mb = QMessageBox(self)
+        mb.setIcon(QMessageBox.Icon.Question)
+        mb.setWindowTitle("Modell ersetzen")
+        mb.setText(
+            "Das aktuelle Modell wurde geändert (Rückgängig-Verlauf ist nicht leer).\n"
+            "Möchten Sie es vor dem Laden speichern?"
+        )
+        save_btn = mb.addButton("Speichern…", QMessageBox.ButtonRole.AcceptRole)
+        mb.addButton("Verwerfen", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = mb.addButton("Abbrechen", QMessageBox.ButtonRole.RejectRole)
+        mb.setDefaultButton(cancel_btn)
+        mb.exec()
+        clicked = mb.clickedButton()
+        if clicked == cancel_btn or clicked is None:
+            return False
+        if clicked == save_btn:
+            return self._save_diagram_syn_interactive()
+        return True
+
+    def _save_diagram_syn_interactive(self) -> bool:
+        """Pick a ``.syn`` path, export the root-level diagram, clear undo on success."""
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Synarius-Projekt speichern",
+            str(open_syn_dialog_start_dir()),
+            "Synarius Project (*.syn);;All Files (*)",
+        )
+        if not file_name:
+            return False
+        out = Path(file_name)
+        if not out.suffix:
+            out = out.with_suffix(".syn")
+        try:
+            text = export_root_diagram_syn_text(self._controller.model)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Speichern", f"Datei konnte nicht geschrieben werden:\n{exc}")
+            return False
+        except ValueError as exc:
+            QMessageBox.warning(self, "Speichern", str(exc))
+            return False
+        except Exception as exc:
+            QMessageBox.warning(self, "Speichern", f"Unerwarteter Fehler:\n{exc}")
+            return False
+        self._controller.clear_undo_history()
+        self.statusBar().showMessage(f"Gespeichert: {out}", 5000)
+        return True
 
     def _on_console_enter(self, line: str) -> None:
         stripped = line.strip()
@@ -3488,6 +3573,19 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            tokens = shlex.split(stripped)
+        except ValueError as exc:
+            self._append_console_line(f"error: {exc}", ERROR_COLOR)
+            self._show_prompt()
+            return
+
+        if len(tokens) >= 2 and tokens[0].lower() == "load":
+            if not self._request_ok_to_discard_or_save_before_model_replace():
+                self._append_console_line("load abgebrochen (Modell unverändert).", ERROR_COLOR)
+                self._show_prompt()
+                return
+
+        try:
             result = self._controller_execute_logged(stripped, source="repl")
         except CommandError as exc:
             self._append_console_line(f"error: {exc}", ERROR_COLOR)
@@ -3502,7 +3600,6 @@ class MainWindow(QMainWindow):
 
         if result is not None and result != "":
             self._append_console_line(result, self._get_output_color())
-        self._sync_diagram_view_from_core_after_console(stripped)
         self._show_prompt()
 
     def _history_prev(self) -> None:
@@ -3520,39 +3617,35 @@ class MainWindow(QMainWindow):
             str(open_syn_dialog_start_dir()),
             "Synarius Project (*.syn *.json *.yaml);;All Files (*)",
         )
-        if file_name:
-            self.statusBar().showMessage(f"Opened: {file_name}")
-            prompt = str(self._controller.current.get("prompt_path"))
-            load_cmd = f'load "{file_name}"'
-            self._append_console_line(f"{prompt}> {load_cmd}", DEFAULT_PROMPT_COLOR)
-            try:
-                result = self._controller_execute_logged(load_cmd, source="file")
-                if result:
-                    self._append_console_line(result, self._get_output_color())
-                self._sync_diagram_view_from_core_after_console(load_cmd)
-            except CommandError as exc:
-                self._append_console_line(f"error: {exc}", ERROR_COLOR)
-            except Exception:
-                self._append_console_line("error: unexpected exception (see log file)", ERROR_COLOR)
-            self._show_prompt()
-        else:
+        if not file_name:
             self.statusBar().showMessage("Open canceled")
+            return
+        if not self._request_ok_to_discard_or_save_before_model_replace():
+            self.statusBar().showMessage("Open canceled")
+            return
+        self.statusBar().showMessage(f"Opened: {file_name}")
+        prompt = str(self._controller.current.get("prompt_path"))
+        load_cmd = f'load "{file_name}"'
+        self._append_console_line(f"{prompt}> {load_cmd}", DEFAULT_PROMPT_COLOR)
+        try:
+            result = self._controller_execute_logged(load_cmd, source="file")
+            if result:
+                self._append_console_line(result, self._get_output_color())
+        except CommandError as exc:
+            self._append_console_line(f"error: {exc}", ERROR_COLOR)
+        except Exception:
+            self._append_console_line("error: unexpected exception (see log file)", ERROR_COLOR)
+        self._show_prompt()
 
     def _save_project(self) -> None:
-        file_name, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Synarius Project",
-            str(open_syn_dialog_start_dir()),
-            "Synarius Project (*.syn *.json *.yaml);;All Files (*)",
-        )
-        if file_name:
-            self.statusBar().showMessage(f"Saved: {file_name}")
+        if self._save_diagram_syn_interactive():
+            pass
         else:
             self.statusBar().showMessage("Save canceled")
 
     def _toggle_right_panel(self, visible: bool) -> None:
         self.right_tabs.setVisible(visible)
-        lw = self._left_resources_split_w
+        lw = self.horizontal_split.sizes()[0]
         if visible:
             self.horizontal_split.setSizes([lw, 712, 220])
         else:

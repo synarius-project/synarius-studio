@@ -18,11 +18,12 @@ from PySide6.QtWidgets import (
 )
 
 from synarius_core.controller import SynariusController
-from synarius_core.model import BasicOperator, BasicOperatorType, Model, Variable
+from synarius_core.model import BasicOperator, BasicOperatorType, ElementaryInstance, Model, Variable
 from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
 from synarius_core.variable_naming import InvalidVariableNameError, validate_python_variable_name
 
 from .dataflow_items import (
+    LOOKUP_BLOCK_SIZE,
     OPERATOR_SIZE,
     UI_SCALE,
     VARIABLE_HEIGHT,
@@ -111,7 +112,7 @@ def _make_preview_block(mode: str) -> VariableBlockItem | OperatorBlockItem:
 def _existing_instance_names(model: Model) -> set[str]:
     names: set[str] = set()
     for ch in model.root.children:
-        if isinstance(ch, (Variable, BasicOperator)):
+        if isinstance(ch, ElementaryInstance):
             names.add(ch.name)
     return names
 
@@ -125,29 +126,54 @@ def _pick_unique_name(existing: set[str], base: str) -> str:
     return f"{base}_{n}"
 
 
+_PARAM_LOOKUP_KEYWORD: dict[str, str] = {
+    "std.Kennwert": "parameter",
+    "std.Kennlinie": "curve",
+    "std.Kennfeld": "map",
+}
+
+
 def library_element_drop_command(controller: SynariusController, type_key: str, scene_pos: QPointF) -> str | None:
     """
-    Build a ``new`` command for a Resource tile dropped on the diagram, or ``None`` if unsupported.
+    Build a CCP command for a Resource tile dropped on the diagram.
 
-    Currently only the bundled standard library four arithmetic elements are placed on the canvas;
-    other types need the console or future diagram support for generic ``ElementaryInstance``.
+    Returns ``None`` when the library element has no diagram support yet (user is informed via the
+    canvas drop handler).  For std-library arithmetic elements the generic ``ElementaryInstance``
+    path is used so the Lib provides both port layout and execution semantics — unlike the toolbar
+    path which creates a ``BasicOperator`` directly.  For std param-lookup elements (Kennwert,
+    Kennlinie, Kennfeld) the ``new parameter / curve / map`` shortcut is used instead.
     """
     tk = type_key.strip()
     if "." not in tk:
         return None
-    lib_name, elem_id = tk.split(".", 1)
-    sym = _STD_LIBRARY_OP_SYMBOL.get((lib_name, elem_id))
-    if sym is None:
-        return None
+    _lib_name, elem_id = tk.split(".", 1)
+    from synarius_core.dataflow_sim._std_type_keys import STD_ARITHMETIC_OP, STD_PARAM_LOOKUP
+
     existing = _existing_instance_names(controller.model)
     c = _snap_pos_half_module(scene_pos)
-    w, h = OPERATOR_SIZE, OPERATOR_SIZE
-    tl = QPointF(c.x() - w * 0.5, c.y() - h * 0.5)
-    mx = tl.x() / UI_SCALE
-    my = tl.y() / UI_SCALE
-    base = {"+": "op_plus", "-": "op_minus", "*": "op_mul", "/": "op_div"}[sym]
-    op_name = _pick_unique_name(existing, base)
-    return f"new BasicOperator {sym} {mx:.12g} {my:.12g} name={shlex.quote(op_name)}"
+    base = elem_id.lower()
+    elem_name = _pick_unique_name(existing, base)
+
+    if tk in STD_ARITHMETIC_OP:
+        w = OPERATOR_SIZE
+        tl = QPointF(c.x() - w * 0.5, c.y() - w * 0.5)
+        mx = tl.x() / UI_SCALE
+        my = tl.y() / UI_SCALE
+        return f"new Elementary {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1 type_key={shlex.quote(tk)}"
+    if tk in STD_PARAM_LOOKUP:
+        kw = _PARAM_LOOKUP_KEYWORD[tk]
+        if tk == "std.Kennwert":
+            # Variable-width block: centre on drop point using VARIABLE_HEIGHT for vertical offset
+            from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
+            bw = variable_diagram_block_width_scene(elem_name)
+            tl = QPointF(c.x() - bw * 0.5, c.y() - VARIABLE_HEIGHT * 0.5)
+        else:
+            s = LOOKUP_BLOCK_SIZE
+            tl = QPointF(c.x() - s * 0.5, c.y() - s * 0.5)
+        mx = tl.x() / UI_SCALE
+        my = tl.y() / UI_SCALE
+        return f"new {kw} {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1"
+    return None
 
 
 def variable_new_instance_command(name: str, scene_pos: QPointF) -> str:

@@ -1,0 +1,34 @@
+# Zwei getrennte Additions-Graphen zum Vergleich der Erzeugungswege:
+#
+# 1) Oberer Graph — wie per Ressourcen-Panel (Lib-Element „std.Add“):
+#    Studio erzeugt dafür ``new Elementary … type_key=std.Add`` (Pins in0 / in1 / out).
+#
+# 2) Unterer Graph — wie per Canvas-„Addition“-Werkzeug (+):
+#    Studio erzeugt ``new BasicOperator + …`` (Pins in1 / in2 / out).
+#
+# Koordinaten: Modell-Einheiten, Vielfache von 7.5 (Halbmodul-Raster wie in example_modelling.syn).
+# Endlayout entspricht einem Studio-Protokoll (Verschiebung per ``set -p @selection position``):
+# lib: (0,-30) auf lib_in_a, (0,-15) auf lib_in_b; canvas: (-37.5,0)/(-37.5,37.5) auf die Inputs,
+# dann die gesamte Canvas-Gruppe (Inputs, op_plus, canvas_out) um (0,+30).
+
+# --- Oben: std.Add aus der Bibliothek (ElementaryInstance) ---
+new Variable lib_in_a 22.5 22.5 1
+new Variable lib_in_b 22.5 82.5 1
+new Variable lib_out 367.5 37.5 1
+
+new Elementary add 187.5 30 1 type_key=std.Add
+
+new Connector lib_in_a add source_pin=out target_pin=in0
+new Connector lib_in_b add source_pin=out target_pin=in1
+new Connector add lib_out source_pin=out target_pin=in
+
+# --- Unten: + aus der Canvas-Additions-Aktion (BasicOperator) ---
+new Variable canvas_in_a -15 157.5 1
+new Variable canvas_in_b -15 240 1
+new Variable canvas_out 367.5 172.5 1
+
+new BasicOperator + 187.5 165 1 name=op_plus
+
+new Connector canvas_in_a op_plus source_pin=out target_pin=in1
+new Connector canvas_in_b op_plus source_pin=out target_pin=in2
+new Connector op_plus canvas_out source_pin=out target_pin=in

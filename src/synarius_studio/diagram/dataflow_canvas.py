@@ -598,7 +598,7 @@ class DataflowGraphicsView(QGraphicsView):
                 else:
                     QMessageBox.information(
                         self.window(),
-                        "Resources",
+                        "Librarys",
                         "Dragging to the diagram is only supported for standard arithmetic blocks "
                         "(Add, Sub, Mul, Div). Place other library elements via the console.",
                     )

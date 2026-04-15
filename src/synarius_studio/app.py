@@ -99,7 +99,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     # dann wirken nur einzelne vertikale Tabs „kompakt”. Fusion verhält sich konsistent.
     # Dark-Palette muss nach setStyle gesetzt werden: Fusion respektiert QPalette vollständig
     # und überschreibt damit die OS-Farbeinstellung unabhängig vom System-Theme.
-    _fusion = QStyleFactory.create(“Fusion”)
+    _fusion = QStyleFactory.create("Fusion")
     if _fusion is not None:
         app.setStyle(_fusion)
     apply_dark_palette(app)
