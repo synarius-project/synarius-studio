@@ -9,6 +9,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  QT_QPA_PLATFORM: offscreen
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -43,19 +46,46 @@ jobs:
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
           # #region agent log
-          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H4\",\"message\":\"resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\",\"prefix\":\"${PREFIX}\"}}"
+          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H5\",\"message\":\"resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\",\"prefix\":\"${PREFIX}\"}}"
           # #endregion
-      - name: Install PlantUML (Sphinx PlantUML diagrams)
+      - name: Install PlantUML and Qt / EGL libs (Sphinx + PySide6 headless)
         run: |
           sudo apt-get update
-          sudo apt-get install -y plantuml
+          sudo apt-get install -y \
+            plantuml \
+            libegl1 \
+            libgl1 \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-keysyms1 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libxcb1
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install -e .
-        working-directory: ${{ steps.resolve.outputs.studio_root }}
+      - name: "Verify file: dependency paths and install synarius-studio"
+        env:
+          STUDIO_ROOT: ${{ steps.resolve.outputs.studio_root }}
+        run: |
+          set -euo pipefail
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          test -f "${STUDIO_ROOT}/pyproject.toml"
+          test -f "${PARENT}/synarius-apps/pyproject.toml"
+          test -f "${PARENT}/synarius-core/pyproject.toml"
+          # #region agent log
+          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H5\",\"message\":\"pre-pip verify\",\"data\":{\"STUDIO_ROOT\":\"${STUDIO_ROOT}\",\"PARENT\":\"${PARENT}\"}}"
+          # #endregion
+          python -m pip install --upgrade pip
+          if ! python -m pip install -e "${STUDIO_ROOT}"; then
+            echo "::group::pip install -e failed (verbose log)"
+            python -m pip install -e "${STUDIO_ROOT}" -vvv 2>&1 | tail -n 400
+            echo "::endgroup::"
+            exit 1
+          fi
       - run: pip install sphinx sphinx-needs zerovm-sphinx-theme sphinxcontrib-plantuml
-        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: sphinx-build -b html docs docs/_build/html
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - uses: actions/upload-pages-artifact@v4
