@@ -14,17 +14,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # #region agent log
-      - name: Debug layout (session 3f66e7)
+      - name: Resolve studio root and clone siblings
+        id: resolve
         run: |
-          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H2\",\"message\":\"post-checkout\",\"data\":{\"GITHUB_WORKSPACE\":\"$GITHUB_WORKSPACE\",\"pwd\":\"$(pwd)\",\"pyproject_at_root\":\"$([ -f \"$GITHUB_WORKSPACE/pyproject.toml\" ] && echo yes || echo no)\",\"nested_studio_dir\":\"$([ -d \"$GITHUB_WORKSPACE/synarius-studio\" ] && echo yes || echo no)\"}}"
-      # #endregion
-      - name: "Clone sibling repos (pyproject.toml file: dependencies)"
-        run: |
-          parent="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$parent"
+          set -euo pipefail
+          if [ -f "${GITHUB_WORKSPACE}/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}"
+          elif [ -f "${GITHUB_WORKSPACE}/synarius-studio/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}/synarius-studio"
+          else
+            echo "::error::synarius-studio pyproject.toml not under ${GITHUB_WORKSPACE}"
+            ls -la "${GITHUB_WORKSPACE}" || true
+            exit 1
+          fi
+          echo "studio_root=${STUDIO_ROOT}" >> "${GITHUB_OUTPUT}"
+          if [ "${STUDIO_ROOT}" = "${GITHUB_WORKSPACE}" ]; then
+            PREFIX=""
+          else
+            PREFIX="${STUDIO_ROOT#${GITHUB_WORKSPACE}/}"
+          fi
+          if [ -z "${PREFIX}" ]; then
+            echo "docs_artifact_rel=docs/_build/html" >> "${GITHUB_OUTPUT}"
+          else
+            echo "docs_artifact_rel=${PREFIX}/docs/_build/html" >> "${GITHUB_OUTPUT}"
+          fi
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          cd "${PARENT}"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
+          # #region agent log
+          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H4\",\"message\":\"resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\",\"prefix\":\"${PREFIX}\"}}"
+          # #endregion
       - name: Install PlantUML (Sphinx PlantUML diagrams)
         run: |
           sudo apt-get update
@@ -33,11 +53,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e .
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: pip install sphinx sphinx-needs zerovm-sphinx-theme sphinxcontrib-plantuml
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: sphinx-build -b html docs docs/_build/html
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: docs/_build/html
+          path: ${{ steps.resolve.outputs.docs_artifact_rel }}
 
   deploy:
     needs: build
@@ -45,4 +68,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
-

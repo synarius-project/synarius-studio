@@ -14,12 +14,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: "Clone sibling repos (pyproject.toml file: dependencies)"
+      - name: Resolve studio root and clone siblings
+        id: resolve
         run: |
-          parent="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$parent"
+          set -euo pipefail
+          if [ -f "${GITHUB_WORKSPACE}/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}"
+          elif [ -f "${GITHUB_WORKSPACE}/synarius-studio/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}/synarius-studio"
+          else
+            echo "::error::synarius-studio pyproject.toml not under ${GITHUB_WORKSPACE}"
+            ls -la "${GITHUB_WORKSPACE}" || true
+            exit 1
+          fi
+          echo "studio_root=${STUDIO_ROOT}" >> "${GITHUB_OUTPUT}"
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          cd "${PARENT}"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
+          # #region agent log
+          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H4\",\"message\":\"ci resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\"}}"
+          # #endregion
       - name: Install Qt / EGL libs (PySide6 on headless Linux)
         run: |
           sudo apt-get update
@@ -39,12 +54,17 @@ jobs:
           python-version: "3.11"
       - run: |
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: pip install --upgrade pip
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: pip install ".[dev]" ruff
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: ruff check .
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: |
           set +e
           pytest
           code=$?
           if [ $code -eq 5 ]; then exit 0; fi
           exit $code
+        working-directory: ${{ steps.resolve.outputs.studio_root }}

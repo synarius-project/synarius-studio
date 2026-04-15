@@ -14,38 +14,82 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: "Clone sibling repos (pyproject.toml file: dependencies)"
+      - name: Resolve studio root and clone siblings
+        id: resolve
         run: |
-          parent="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$parent"
+          set -euo pipefail
+          if [ -f "${GITHUB_WORKSPACE}/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}"
+          elif [ -f "${GITHUB_WORKSPACE}/synarius-studio/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}/synarius-studio"
+          else
+            echo "::error::synarius-studio pyproject.toml not under ${GITHUB_WORKSPACE}"
+            ls -la "${GITHUB_WORKSPACE}" || true
+            exit 1
+          fi
+          echo "studio_root=${STUDIO_ROOT}" >> "${GITHUB_OUTPUT}"
+          if [ "${STUDIO_ROOT}" = "${GITHUB_WORKSPACE}" ]; then
+            echo "dist_artifact_glob=dist/*" >> "${GITHUB_OUTPUT}"
+          else
+            echo "dist_artifact_glob=${STUDIO_ROOT#${GITHUB_WORKSPACE}/}/dist/*" >> "${GITHUB_OUTPUT}"
+          fi
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          cd "${PARENT}"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install build
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - run: python -m build
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - uses: actions/upload-artifact@v5
         with:
           name: dist-python
-          path: dist/*
+          path: ${{ steps.resolve.outputs.dist_artifact_glob }}
 
   windows-installer:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - name: "Clone sibling repos (pyproject.toml file: dependencies)"
+      - name: Resolve studio root and clone siblings
+        id: resolve
         shell: bash
         run: |
-          parent="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$parent"
+          set -euo pipefail
+          if [ -f "${GITHUB_WORKSPACE}/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}"
+          elif [ -f "${GITHUB_WORKSPACE}/synarius-studio/pyproject.toml" ]; then
+            STUDIO_ROOT="${GITHUB_WORKSPACE}/synarius-studio"
+          else
+            echo "::error::synarius-studio pyproject.toml not under ${GITHUB_WORKSPACE}"
+            ls -la "${GITHUB_WORKSPACE}" || true
+            exit 1
+          fi
+          echo "studio_root=${STUDIO_ROOT}" >> "${GITHUB_OUTPUT}"
+          if [ "${STUDIO_ROOT}" = "${GITHUB_WORKSPACE}" ]; then
+            PREFIX=""
+            echo "msi_glob=dist/Synarius_Installer_*.msi" >> "${GITHUB_OUTPUT}"
+            echo "artifact_prefix=" >> "${GITHUB_OUTPUT}"
+          else
+            PREFIX="${STUDIO_ROOT#${GITHUB_WORKSPACE}/}"
+            echo "msi_glob=${PREFIX}/dist/Synarius_Installer_*.msi" >> "${GITHUB_OUTPUT}"
+            echo "artifact_prefix=${PREFIX}/" >> "${GITHUB_OUTPUT}"
+          fi
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          cd "${PARENT}"
           git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
           git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
+          # #region agent log
+          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H4\",\"message\":\"windows resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\",\"prefix\":\"${PREFIX}\"}}"
+          # #endregion
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Set app version from release tag
         shell: powershell
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
         run: |
           $tag = "${env:GITHUB_REF_NAME}"
           if (-not $tag.StartsWith("v")) {
@@ -57,14 +101,19 @@ jobs:
           }
           "__version__ = `"$version`"" | Out-File -Encoding utf8 src/synarius_studio/_version.py
       - run: pip install . "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       # FMU runtime in packaged app requires fmpy at bundle time; ensure it is present in CI env.
       - run: pip install fmpy
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       # Live DataViewer / recording viewer: same packages as monorepo ``synarius-apps`` (no core override).
       - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: PyInstaller (one-file, Qt plugins + package data)
         run: pyinstaller --noconfirm --clean synarius_studio.spec
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Smoke test bundled EXE startup
         shell: powershell
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
         run: |
           $env:SYNARIUS_STUDIO_SMOKE_EXIT = "1"
           $proc = Start-Process -FilePath "dist\synarius-studio.exe" -ArgumentList "--smoke-exit" -PassThru -Wait
@@ -76,6 +125,7 @@ jobs:
           }
       - name: Collect runtime log from smoke run
         shell: powershell
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
         run: |
           $src = Join-Path $env:LOCALAPPDATA "Synarius\SynariusStudio\Logs\synarius-studio.log"
           $dstDir = Join-Path $env:RUNNER_TEMP "synarius-smoke-logs"
@@ -96,13 +146,14 @@ jobs:
         with:
           name: pyinstaller-diagnostics
           path: |
-            build/**/warn-*.txt
-            build/**/xref-*.html
+            ${{ steps.resolve.outputs.artifact_prefix }}build/**/warn-*.txt
+            ${{ steps.resolve.outputs.artifact_prefix }}build/**/xref-*.html
             ${{ runner.temp }}/synarius-smoke-logs/**
           if-no-files-found: warn
       - run: choco install wixtoolset -y
       - name: Build MSI with WiX
         shell: powershell
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
         run: |
           $tag = "${env:GITHUB_REF_NAME}"
           if (-not $tag.StartsWith("v")) {
@@ -217,6 +268,7 @@ jobs:
           light.exe installer.wixobj -ext WixUIExtension -ext WixUtilExtension -o $msiPath
       - name: Validate MSI if wix CLI available
         shell: powershell
+        working-directory: ${{ steps.resolve.outputs.studio_root }}
         run: |
           $tag = "${env:GITHUB_REF_NAME}"
           $version = $tag.Substring(1)
@@ -229,7 +281,7 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-installer
-          path: dist/Synarius_Installer_*.msi
+          path: ${{ steps.resolve.outputs.msi_glob }}
 
   release-assets:
     runs-on: ubuntu-latest
@@ -244,4 +296,4 @@ jobs:
         with:
           prerelease: ${{ startsWith(github.ref_name, 'v0.0.') }}
           generate_release_notes: true
-          files: release-assets/dist-windows-installer/Synarius_Installer_*.msi
+          files: release-assets/**/Synarius_Installer_*.msi
