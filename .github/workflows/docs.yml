@@ -66,22 +66,40 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: "Verify file: dependency paths and install synarius-studio"
-        env:
-          STUDIO_ROOT: ${{ steps.resolve.outputs.studio_root }}
+      - name: "Check monorepo sibling paths (file: deps)"
         run: |
           set -euo pipefail
-          PARENT="$(dirname "${STUDIO_ROOT}")"
-          test -f "${STUDIO_ROOT}/pyproject.toml"
-          test -f "${PARENT}/synarius-apps/pyproject.toml"
-          test -f "${PARENT}/synarius-core/pyproject.toml"
+          STUDIO_ROOT='${{ steps.resolve.outputs.studio_root }}'
+          STUDIO_ROOT="${STUDIO_ROOT//$'\r'/}"
+          PARENT="$(dirname "$STUDIO_ROOT")"
+          echo "STUDIO_ROOT=$STUDIO_ROOT"
+          echo "PARENT=$PARENT"
+          ls -la "$PARENT" || true
+          if [ ! -f "$STUDIO_ROOT/pyproject.toml" ]; then
+            echo "::error::Missing synarius-studio pyproject: $STUDIO_ROOT/pyproject.toml"
+            ls -la "$STUDIO_ROOT" || true
+            exit 1
+          fi
+          for name in synarius-apps synarius-core; do
+            f="$PARENT/$name/pyproject.toml"
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing $f (needed for file:../$name). Contents of $PARENT/$name:"
+              ls -la "$PARENT/$name" 2>/dev/null || echo "(no dir)"
+              exit 1
+            fi
+          done
           # #region agent log
-          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H5\",\"message\":\"pre-pip verify\",\"data\":{\"STUDIO_ROOT\":\"${STUDIO_ROOT}\",\"PARENT\":\"${PARENT}\"}}"
+          echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H6\",\"message\":\"sibling-paths-ok\",\"data\":{\"STUDIO_ROOT\":\"$STUDIO_ROOT\",\"PARENT\":\"$PARENT\"}}"
           # #endregion
+      - name: "pip install -e synarius-studio"
+        run: |
+          set -euo pipefail
+          STUDIO_ROOT='${{ steps.resolve.outputs.studio_root }}'
+          STUDIO_ROOT="${STUDIO_ROOT//$'\r'/}"
           python -m pip install --upgrade pip
-          if ! python -m pip install -e "${STUDIO_ROOT}"; then
+          if ! python -m pip install -e "$STUDIO_ROOT"; then
             echo "::group::pip install -e failed (verbose log)"
-            python -m pip install -e "${STUDIO_ROOT}" -vvv 2>&1 | tail -n 400
+            python -m pip install -e "$STUDIO_ROOT" -vvv 2>&1 | tail -n 400
             echo "::endgroup::"
             exit 1
           fi
