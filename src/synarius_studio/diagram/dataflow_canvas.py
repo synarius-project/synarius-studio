@@ -15,6 +15,8 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPalette,
+    QResizeEvent,
+    QShowEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QMessageBox
@@ -29,10 +31,12 @@ from .dataflow_items import DataViewerBlockItem, FmuBlockItem, OperatorBlockItem
 from .diagram_scene import SynariusDiagramScene
 from .placement_interactive import (
     LIBRARY_ELEMENT_DRAG_MIME,
+    LIBRARY_ELEMENT_NAMED_DRAG_MIME,
     SIGNAL_NAME_DRAG_MIME,
     VARIABLE_NAME_DRAG_MIME,
     CanvasPlacementTool,
     library_element_drop_command,
+    library_element_named_drop_command,
     variable_new_instance_command,
 )
 
@@ -94,8 +98,10 @@ class DataflowGraphicsView(QGraphicsView):
     """
     Renders a ``QGraphicsScene`` with:
     - **Wheel**: zoom (anchor under mouse).
-    - **Ctrl + wheel**: vertical scroll.
-    - **Shift + wheel**: horizontal scroll.
+    - **Ctrl + wheel**: horizontal scroll.
+    - **Shift + wheel**: vertical scroll.
+    - **Scroll bars**: ``ScrollBarAsNeeded`` while scene (0, 0) is visible; both bars switch
+      to ``ScrollBarAlwaysOn`` once the origin leaves the viewport so the user can pan back.
     - **Left-drag on empty background**: rubber-band rectangle to select multiple items (replace selection).
     - **Ctrl + left-drag on empty background**: pan the canvas (Qt’s Ctrl+rubber-band “add to selection” is not used).
     - **Ctrl** (over empty canvas): open-hand cursor hint; while panning, closed hand.
@@ -166,6 +172,61 @@ class DataflowGraphicsView(QGraphicsView):
         self._deferred_scene_left_release_timer = QTimer(self)
         self._deferred_scene_left_release_timer.setSingleShot(True)
         self._deferred_scene_left_release_timer.timeout.connect(self._fire_deferred_scene_left_release)
+
+        self._syncing_scrollbar_policy = False
+        self.horizontalScrollBar().valueChanged.connect(self._sync_scrollbar_policy_for_scene_origin)
+        self.verticalScrollBar().valueChanged.connect(self._sync_scrollbar_policy_for_scene_origin)
+
+    def _scene_origin_visible_in_viewport(self) -> bool:
+        """True iff scene point (0, 0) lies inside the current viewport rectangle."""
+        pt = self.mapFromScene(QPointF(0.0, 0.0))
+        return self.viewport().rect().contains(pt)
+
+    def _sync_scrollbar_policy_for_scene_origin(self) -> None:
+        """
+        While (0, 0) is visible, keep Qt's as-needed scroll bars. Once the user pans/zooms
+        so the origin is off-screen, force both bars on so ranges stay usable.
+        """
+        if self._syncing_scrollbar_policy:
+            return
+        self._syncing_scrollbar_policy = True
+        hsb = self.horizontalScrollBar()
+        vsb = self.verticalScrollBar()
+        try:
+            hsb.blockSignals(True)
+            vsb.blockSignals(True)
+            # Showing scroll bars changes the viewport; iterate until policies match visibility.
+            for _ in range(4):
+                origin_ok = self._scene_origin_visible_in_viewport()
+                h_target = (
+                    Qt.ScrollBarPolicy.ScrollBarAsNeeded
+                    if origin_ok
+                    else Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+                )
+                v_target = (
+                    Qt.ScrollBarPolicy.ScrollBarAsNeeded
+                    if origin_ok
+                    else Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+                )
+                if (
+                    self.horizontalScrollBarPolicy() == h_target
+                    and self.verticalScrollBarPolicy() == v_target
+                ):
+                    break
+                self.setHorizontalScrollBarPolicy(h_target)
+                self.setVerticalScrollBarPolicy(v_target)
+        finally:
+            hsb.blockSignals(False)
+            vsb.blockSignals(False)
+            self._syncing_scrollbar_policy = False
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._sync_scrollbar_policy_for_scene_origin()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._sync_scrollbar_policy_for_scene_origin()
 
     def set_viewport_canvas_color(self, hex_color: str) -> None:
         """Match scene and parent chrome: QGraphicsView draws this behind / around the scene."""
@@ -370,6 +431,7 @@ class DataflowGraphicsView(QGraphicsView):
             self._pan_viewport_pos = None
             pos = event.position().toPoint()
             self._cursor_hint_empty_canvas(pos)
+            self._sync_scrollbar_policy_for_scene_origin()
             event.accept()
             return
         if (
@@ -503,20 +565,23 @@ class DataflowGraphicsView(QGraphicsView):
         s = p / 100.0
         self.scale(s, s)
         self.zoom_percent_changed.emit(self.zoom_percent())
+        self._sync_scrollbar_policy_for_scene_origin()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         mods = event.modifiers()
 
         if mods & Qt.KeyboardModifier.ControlModifier:
-            vsb = self.verticalScrollBar()
-            vsb.setValue(vsb.value() - delta)
-            event.accept()
-            return
-        if mods & Qt.KeyboardModifier.ShiftModifier:
             hsb = self.horizontalScrollBar()
             hsb.setValue(hsb.value() - delta)
             event.accept()
+            self._sync_scrollbar_policy_for_scene_origin()
+            return
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            vsb = self.verticalScrollBar()
+            vsb.setValue(vsb.value() - delta)
+            event.accept()
+            self._sync_scrollbar_policy_for_scene_origin()
             return
 
         # Zoom (no Ctrl/Shift)
@@ -525,6 +590,7 @@ class DataflowGraphicsView(QGraphicsView):
             self.scale(factor, factor)
             self.zoom_percent_changed.emit(self.zoom_percent())
         event.accept()
+        self._sync_scrollbar_policy_for_scene_origin()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if self._interaction_locked:
@@ -537,6 +603,9 @@ class DataflowGraphicsView(QGraphicsView):
             event.acceptProposedAction()
             return
         if event.mimeData().hasFormat(LIBRARY_ELEMENT_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        if event.mimeData().hasFormat(LIBRARY_ELEMENT_NAMED_DRAG_MIME):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
@@ -552,6 +621,9 @@ class DataflowGraphicsView(QGraphicsView):
             event.acceptProposedAction()
             return
         if event.mimeData().hasFormat(LIBRARY_ELEMENT_DRAG_MIME):
+            event.acceptProposedAction()
+            return
+        if event.mimeData().hasFormat(LIBRARY_ELEMENT_NAMED_DRAG_MIME):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
@@ -602,6 +674,22 @@ class DataflowGraphicsView(QGraphicsView):
                         "Dragging to the diagram is only supported for standard arithmetic blocks "
                         "(Add, Sub, Mul, Div). Place other library elements via the console.",
                     )
+            event.acceptProposedAction()
+            return
+        if md.hasFormat(LIBRARY_ELEMENT_NAMED_DRAG_MIME):
+            raw = bytes(md.data(LIBRARY_ELEMENT_NAMED_DRAG_MIME)).decode("utf-8", errors="strict")
+            parts = raw.split("\0", 1)
+            if len(parts) == 2 and self._controller_for_placement is not None:
+                type_key, inst_name = parts[0].strip(), parts[1].strip()
+                if type_key and inst_name:
+                    if self._placement_tool and self._placement_tool.active():
+                        self._placement_tool.cancel(emit_cancelled=False)
+                    scene_pos = self.mapToScene(event.position().toPoint())
+                    cmd = library_element_named_drop_command(
+                        self._controller_for_placement, type_key, inst_name, scene_pos
+                    )
+                    if cmd:
+                        self.placement_command.emit(cmd)
             event.acceptProposedAction()
             return
         super().dropEvent(event)

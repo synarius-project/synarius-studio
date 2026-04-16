@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsRectItem,
+    QGraphicsScene,
     QGraphicsSceneContextMenuEvent,
     QGraphicsSceneHoverEvent,
     QGraphicsSceneMouseEvent,
@@ -188,6 +189,8 @@ LOOKUP_ICON_SIZE = 40.0
 
 # Match connector edges (stroke weight). Block outlines are 2× this.
 CONNECTOR_LINE_WIDTH = 1.35
+# Radius of the semicircular “bridge” where a horizontal wire clears a crossing vertical.
+CONNECTOR_CROSSING_BRIDGE_R = 6.0
 BLOCK_OUTLINE_WIDTH = 2.0 * CONNECTOR_LINE_WIDTH
 # Uniform body fill for variable / operator / FMU / DataViewer blocks on the canvas.
 DIAGRAM_BLOCK_FILL = QColor(255, 255, 255)
@@ -302,6 +305,11 @@ def _refresh_connectors_touching(block: QGraphicsItem) -> None:
         notifier = getattr(it, "notify_block_moved", None)
         if callable(notifier):
             notifier(block)
+    # Crossing geometry depends on every connector’s axis polyline; refresh all edges
+    # so horizontal “bridges” stay correct when an unrelated block moves a vertical leg.
+    for it in scene.items():
+        if isinstance(it, ConnectorEdgeItem):
+            it._rebuild_stroke()
 
 
 class _MovableSnapRectMixin:
@@ -1081,7 +1089,17 @@ _FMU_PIN_LABEL_COLOR = QColor(76, 64, 46)
 
 
 class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
-    """Multi-pin elementary library block (e.g. FMU): dynamic I/O from the model ``pin`` map."""
+    """Multi-pin elementary library block (e.g. FMU): dynamic I/O from the model ``pin`` map.
+
+    **Layout mirroring requirement:** every block-type branch in ``__init__`` that computes a
+    custom block width or pin position must have a matching special case in
+    ``synarius-core/src/synarius_core/model/diagram_geometry.py``
+    (``elementary_lib_block_pin_diagram_xy``).  A mismatch between ``connection_point()`` here
+    and the core's pin-position calculation causes connector bends to drift by the difference on
+    every drag-release cycle.
+
+    See ``docs/developer/connector_rendering.rst``, section "Die Dual-Path-Invariante".
+    """
 
     def __init__(
         self,
@@ -1740,11 +1758,126 @@ def _collapse_collinear_axis_aligned(points: list[QPointF]) -> list[QPointF]:
     return pts
 
 
-def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QPainterPath:
+def _auto_orthogonal_route_waypoints_xy(x1: float, y1: float, x2: float, y2: float) -> list[tuple[float, float]]:
+    """
+    Sharp polyline for default pin-to-pin routing (same topology as ``_build_rounded_orthogonal_path``).
+
+    Keep this in sync with the H–V–H branch of ``_build_rounded_orthogonal_path``.
+    """
+    dx = x2 - x1
+    dy = y2 - y1
+    if abs(dx) < 1.0 and abs(dy) < 1.0:
+        return [(x1, y1), (x2, y2)]
+    if abs(dy) < 1.0:
+        return [(x1, y1), (x2, y2)]
+    if abs(dx) < 1.0:
+        return [(x1, y1), (x2, y2)]
+    _COLLINEAR_DY_PX = 10.0
+    if abs(dy) <= _COLLINEAR_DY_PX:
+        return [(x1, y1), (x2, y2)]
+    x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
+    span_x = x_max - x_min
+    span_y = abs(dy)
+    radius = 14.0
+    r_y_cap = max(0.5, span_y * 0.5 - 1.0)
+    r = min(radius, span_x * 0.32, span_y * 0.32, r_y_cap)
+    r = max(0.5, r)
+    eps = 2.0
+    while r > 0.55:
+        lo_b = x_min + r + eps
+        hi_b = x_max - r - eps
+        if lo_b <= hi_b:
+            break
+        r = max(0.5, r * 0.82)
+    x_mid = (x1 + x2) * 0.5
+    lo_b = x_min + r + eps
+    hi_b = x_max - r - eps
+    if lo_b <= hi_b:
+        x_mid = max(lo_b, min(x_mid, hi_b))
+    return [(x1, y1), (x_mid, y1), (x_mid, y2), (x2, y2)]
+
+
+def _path_horizontal_with_vertical_bridges(
+    path: QPainterPath,
+    x0: float,
+    y: float,
+    x1: float,
+    vertical_obstacles: list[tuple[float, float, float]],
+    bridge_r: float,
+) -> None:
+    """Append geometry from (x0, y) to (x1, y), drawing semicircular bridges over crossing verticals."""
+    if not vertical_obstacles or abs(x0 - x1) < 1e-9:
+        path.lineTo(x1, y)
+        return
+    x_lo, x_hi = (x0, x1) if x0 <= x1 else (x1, x0)
+    crossings: list[float] = []
+    for xv, ymin, ymax in vertical_obstacles:
+        lo_y, hi_y = (ymin, ymax) if ymin <= ymax else (ymax, ymin)
+        if not (x_lo < xv < x_hi):
+            continue
+        if not (lo_y < y < hi_y):
+            continue
+        crossings.append(float(xv))
+    if not crossings:
+        path.lineTo(x1, y)
+        return
+    crossings = sorted(set(crossings))
+    n = len(crossings)
+    rs = [bridge_r] * n
+    for _ in range(20):
+        tightened = False
+        for i in range(n - 1):
+            gap = crossings[i + 1] - crossings[i]
+            need = rs[i] + rs[i + 1] + 2.5
+            if gap < need:
+                tightened = True
+                scale = max(0.35, (gap - 2.5) / (rs[i] + rs[i + 1] + 1e-6))
+                scale = min(1.0, scale)
+                rs[i] *= scale
+                rs[i + 1] *= scale
+        if not tightened:
+            break
+    rs = [max(1.6, float(r)) for r in rs]
+    direction = 1.0 if x1 >= x0 else -1.0
+    ordered = sorted(zip(crossings, rs), key=lambda z: z[0] * direction)
+    for xv, R in ordered:
+        rect = QRectF(xv - R, y - R, 2.0 * R, 2.0 * R)
+        if direction > 0.0:
+            path.lineTo(xv - R, y)
+            path.arcTo(rect, 180.0, -180.0)
+        else:
+            path.lineTo(xv + R, y)
+            path.arcTo(rect, 0.0, 180.0)
+    path.lineTo(x1, y)
+
+
+def _path_line_to_with_vertical_clearance(
+    path: QPainterPath,
+    x_end: float,
+    y_end: float,
+    vertical_obstacles: list[tuple[float, float, float]],
+    bridge_r: float,
+) -> None:
+    pos = path.currentPosition()
+    x0, y0 = pos.x(), pos.y()
+    if abs(y0 - y_end) <= 1e-6 and abs(x0 - x_end) > 1e-9:
+        _path_horizontal_with_vertical_bridges(path, x0, y0, x_end, vertical_obstacles, bridge_r)
+        return
+    path.lineTo(x_end, y_end)
+
+
+def _rounded_orthogonal_chain(
+    points: list[QPointF],
+    radius: float = 14.0,
+    *,
+    vertical_obstacles: list[tuple[float, float, float]] | None = None,
+    bridge_radius: float = CONNECTOR_CROSSING_BRIDGE_R,
+) -> QPainterPath:
     """Axis-aligned polyline with small quadratic fillets at interior corners."""
     path = QPainterPath()
     cleaned = _collapse_collinear_axis_aligned(_dedupe_consecutive_points(points))
     n = len(cleaned)
+    verts = vertical_obstacles
     if n == 0:
         return path
     if n == 1:
@@ -1752,7 +1885,10 @@ def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QP
         return path
     if n == 2:
         path.moveTo(cleaned[0])
-        path.lineTo(cleaned[1])
+        if verts:
+            _path_line_to_with_vertical_clearance(path, cleaned[1].x(), cleaned[1].y(), verts, bridge_radius)
+        else:
+            path.lineTo(cleaned[1])
         return path
     path.moveTo(cleaned[0])
     for i in range(1, n - 1):
@@ -1764,7 +1900,10 @@ def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QP
         len1 = math.hypot(dx1, dy1)
         len2 = math.hypot(dx2, dy2)
         if len1 < 1e-9 or len2 < 1e-9:
-            path.lineTo(p1)
+            if verts:
+                _path_line_to_with_vertical_clearance(path, p1.x(), p1.y(), verts, bridge_radius)
+            else:
+                path.lineTo(p1)
             continue
         ux1, uy1 = dx1 / len1, dy1 / len1
         ux2, uy2 = dx2 / len2, dy2 / len2
@@ -1774,9 +1913,15 @@ def _rounded_orthogonal_chain(points: list[QPointF], radius: float = 14.0) -> QP
         c1y = p1.y() - uy1 * r
         c2x = p1.x() + ux2 * r
         c2y = p1.y() + uy2 * r
-        path.lineTo(QPointF(c1x, c1y))
+        if verts:
+            _path_line_to_with_vertical_clearance(path, c1x, c1y, verts, bridge_radius)
+        else:
+            path.lineTo(QPointF(c1x, c1y))
         path.quadTo(p1, QPointF(c2x, c2y))
-    path.lineTo(cleaned[-1])
+    if verts:
+        _path_line_to_with_vertical_clearance(path, cleaned[-1].x(), cleaned[-1].y(), verts, bridge_radius)
+    else:
+        path.lineTo(cleaned[-1])
     return path
 
 
@@ -1865,17 +2010,28 @@ class ConnectorEdgeItem(QGraphicsObject):
         if block is self._att_src or block is self._att_dst:
             self._sync_attached_geometry()
 
-    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: object) -> object:
-        result = super().itemChange(change, value)
-        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged and not value:
-            self.unsetCursor()
-        return result
-
     def _poly_tuple(self) -> list[tuple[float, float]]:
         p1, p2 = self._p1, self._p2
         if self._connector is None:
             return [(p1.x(), p1.y()), (p2.x(), p2.y())]
         return self._connector.polyline_xy((p1.x(), p1.y()), (p2.x(), p2.y()))
+
+    def _axis_route_tuple(self) -> list[tuple[float, float]]:
+        """Axis-aligned routing polyline (sharp corners) for obstacle / crossing detection."""
+        p1, p2 = self._p1, self._p2
+        sx, sy = p1.x(), p1.y()
+        tx, ty = p2.x(), p2.y()
+        if self._bend_drag_local is not None:
+            tpl = polyline_for_endpoints(sx, sy, tx, ty, self._bend_drag_local)
+            return _orthogonal_stroke_polyline(tpl)
+        c = self._connector
+        if c is not None and c._orthogonal_bends:
+            tpl = c.polyline_xy((sx, sy), (tx, ty))
+            return _orthogonal_stroke_polyline(tpl)
+        return _auto_orthogonal_route_waypoints_xy(sx, sy, tx, ty)
+
+    def _foreign_vertical_obstacles(self) -> list[tuple[float, float, float]]:
+        return vertical_obstacles_from_connector_edges(self.scene(), exclude_item=self)
 
     def _rebuild_stroke(self) -> None:
         self.prepareGeometryChange()
@@ -1883,16 +2039,22 @@ class ConnectorEdgeItem(QGraphicsObject):
         c = self._connector
         sx, sy = p1.x(), p1.y()
         tx, ty = p2.x(), p2.y()
+        v_obs = self._foreign_vertical_obstacles()
+        br = CONNECTOR_CROSSING_BRIDGE_R
         if self._bend_drag_local is not None:
             tpl = polyline_for_endpoints(sx, sy, tx, ty, self._bend_drag_local)
             tpl = _orthogonal_stroke_polyline(tpl)
             pts = [QPointF(x, y) for x, y in tpl]
-            self._stroke_path = _rounded_orthogonal_chain(pts, radius=14.0)
+            self._stroke_path = _rounded_orthogonal_chain(pts, 14.0, vertical_obstacles=v_obs, bridge_radius=br)
         elif c is not None and c._orthogonal_bends:
             tpl = c.polyline_xy((sx, sy), (tx, ty))
             tpl = _orthogonal_stroke_polyline(tpl)
             pts = [QPointF(x, y) for x, y in tpl]
-            self._stroke_path = _rounded_orthogonal_chain(pts, radius=14.0)
+            self._stroke_path = _rounded_orthogonal_chain(pts, 14.0, vertical_obstacles=v_obs, bridge_radius=br)
+        elif v_obs:
+            tpl = _auto_orthogonal_route_waypoints_xy(sx, sy, tx, ty)
+            pts = [QPointF(x, y) for x, y in tpl]
+            self._stroke_path = _rounded_orthogonal_chain(pts, 14.0, vertical_obstacles=v_obs, bridge_radius=br)
         else:
             self._stroke_path = _build_rounded_orthogonal_path(p1, p2)
         self.update()
@@ -1922,14 +2084,27 @@ class ConnectorEdgeItem(QGraphicsObject):
         tx, ty = self._p2.x(), self._p2.y()
         segs = orthogonal_drag_segments(sx, sy, tx, ty, preview)
         px, py = scene_pos.x(), scene_pos.y()
-        best: tuple[int, str] | None = None
-        best_d = _CONNECTOR_BEND_DRAG_HIT_SQ
+        # Collect best candidate per axis separately; prefer axis="x" (vertical segment, moves
+        # left/right) over axis="y" when both are within the hit radius.  Without this, clicking
+        # near the lower bend-corner returns axis="y" (the approach-horizontal stub), so a
+        # horizontal drag has no visible effect and feels like the drag is broken.
+        best_x: tuple[int, str] | None = None
+        best_x_d = _CONNECTOR_BEND_DRAG_HIT_SQ
+        best_y: tuple[int, str] | None = None
+        best_y_d = _CONNECTOR_BEND_DRAG_HIT_SQ
         for x1, y1, x2, y2, bi, axis in segs:
             d = _dist_sq_point_to_seg(px, py, x1, y1, x2, y2)
-            if d <= best_d:
-                best_d = d
-                best = (bi, axis)
-        return best
+            if axis == "x":
+                if d <= best_x_d:
+                    best_x_d = d
+                    best_x = (bi, axis)
+            else:
+                if d <= best_y_d:
+                    best_y_d = d
+                    best_y = (bi, axis)
+        if best_x is not None:
+            return best_x
+        return best_y
 
     def _update_bend_hover_cursor(self, scene_pos: QPointF) -> None:
         if self._bend_drag is not None:
@@ -1947,6 +2122,18 @@ class ConnectorEdgeItem(QGraphicsObject):
                 Qt.CursorShape.SizeHorCursor if axis == "x" else Qt.CursorShape.SizeVerCursor,
             )
         )
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: object) -> object:
+        result = super().itemChange(change, value)
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            # Raise selected connectors above non-selected peers so their bend-drag clicks
+            # are not intercepted by overlapping connectors at the same base z-level.
+            if bool(value):
+                self.setZValue(-5.0)
+            else:
+                self.setZValue(-10.0)
+                self.unsetCursor()
+        return result
 
     def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         if self._bend_drag is None:
@@ -1981,11 +2168,21 @@ class ConnectorEdgeItem(QGraphicsObject):
                 self.grabMouse()
                 bends = self._bend_drag_local
                 if 0 <= bend_i < len(bends):
+                    start_val = float(bends[bend_i])
+                    # Anchor press_pt to the segment's own coordinate so the drag delta
+                    # is measured from the segment line, not from the click location.
+                    # Without this, clicking N px away from the segment biases the
+                    # release position by N px in the same direction.
+                    sp = event.scenePos()
+                    if axis == "x":
+                        anchor_pt = QPointF(start_val, sp.y())
+                    else:
+                        anchor_pt = QPointF(sp.x(), start_val)
                     self._bend_drag = (
                         bend_i,
                         axis,
-                        QPointF(event.scenePos()),
-                        float(bends[bend_i]),
+                        anchor_pt,
+                        start_val,
                         sx,
                         sy,
                         tx,
@@ -2013,7 +2210,7 @@ class ConnectorEdgeItem(QGraphicsObject):
             b = self._bend_drag_local
             if b is not None and 0 <= bend_i < len(b):
                 b[bend_i] = new_v
-                self._rebuild_stroke()
+                refresh_all_connector_crossing_strokes(self.scene())
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -2043,7 +2240,7 @@ class ConnectorEdgeItem(QGraphicsObject):
                 and not _bends_list_equal(rel_final, list(c._orthogonal_bends))
             ):
                 self._apply_bends_list(final_bends)
-            self._rebuild_stroke()
+            refresh_all_connector_crossing_strokes(self.scene())
             if self.isSelected():
                 self._update_bend_hover_cursor(event.scenePos())
             else:
@@ -2087,3 +2284,38 @@ class ConnectorEdgeItem(QGraphicsObject):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self._stroke_path)
         painter.restore()
+
+
+def vertical_obstacles_from_connector_edges(
+    scene: QGraphicsScene | None,
+    *,
+    exclude_item: QGraphicsItem | None = None,
+) -> list[tuple[float, float, float]]:
+    """
+    Collect axis-aligned vertical segments from every ``ConnectorEdgeItem`` in ``scene``.
+
+    Used so horizontal connector runs can draw semicircular bridges at crossings.
+    """
+    if scene is None:
+        return []
+    out: list[tuple[float, float, float]] = []
+    for it in scene.items():
+        if it is exclude_item or not isinstance(it, ConnectorEdgeItem):
+            continue
+        tpl = it._axis_route_tuple()
+        for j in range(len(tpl) - 1):
+            xa, ya = tpl[j]
+            xb, yb = tpl[j + 1]
+            if abs(xa - xb) < 1e-6 and abs(ya - yb) > 1e-6:
+                lo_y, hi_y = (ya, yb) if ya <= yb else (yb, ya)
+                out.append((float(xa), float(lo_y), float(hi_y)))
+    return out
+
+
+def refresh_all_connector_crossing_strokes(scene: QGraphicsScene | None) -> None:
+    """Rebuild every connector path (e.g. after the edge set changed so crossing bridges stay correct)."""
+    if scene is None:
+        return
+    for it in scene.items():
+        if isinstance(it, ConnectorEdgeItem):
+            it._rebuild_stroke()

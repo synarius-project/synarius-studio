@@ -1,4 +1,9 @@
-"""Interactive orthogonal connector routing (click free pin → H/V bends → opposite pin)."""
+"""Interactive orthogonal connector routing (click free pin → H/V bends → opposite pin).
+
+For the full connector rendering pipeline (bend storage format, drag-release mechanics, the
+dual-path invariant between studio and core geometry) see
+``docs/developer/connector_rendering.rst``.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ from synarius_core.model import Connector
 from synarius_core.model.connector_routing import encode_bends_from_polyline, orthogonal_polyline
 
 from .dataflow_items import (
+    CONNECTOR_CROSSING_BRIDGE_R,
     CONNECTOR_LINE_WIDTH,
     FmuBlockItem,
     OperatorBlockItem,
@@ -28,6 +34,7 @@ from .dataflow_items import (
     _rounded_orthogonal_chain,
     _snap_scalar_half_module,
     diagram_pin_from_graphics_item,
+    vertical_obstacles_from_connector_edges,
 )
 
 def _endpoint_after_bends(sx: float, sy: float, bends: list[float]) -> tuple[float, float]:
@@ -78,15 +85,17 @@ def _append_orthogonal_to_target(
 
 def _normalize_final_bends(bends: list[float], tx: float, ty: float, *, eps: float = 1e-3) -> list[float]:
     """
-    Persist only the essential support coordinate for new connectors.
+    Persist only the essential support coordinates for new connectors.
 
-    During interactive routing we may transiently resolve a final y-bend to reach the target.
-    For persistence this y component is redundant (it is implied by target y), so keep only
-    the first x-support point where possible.
+    During interactive routing the final segment always terminates at the target pin's y
+    coordinate (enforced by the routing finish functions), so the trailing y-bend is
+    redundant and can be dropped for any even-length list.  This prevents extra visual
+    steps caused by imprecise placement of the last bend point.
     """
     out = [float(x) for x in bends]
-    if len(out) == 2 and abs(out[1] - ty) <= eps:
-        out = [out[0]]
+    # Strip trailing y-coordinate for any even-length list: routing derives it from ty.
+    if len(out) >= 2 and len(out) % 2 == 0:
+        out = out[:-1]
     # Avoid degenerate "same x as target" first support; this causes visual U-detours.
     if len(out) == 1 and abs(out[0] - tx) <= eps:
         return []
@@ -102,14 +111,15 @@ def _pin_instance_id(block: VariableBlockItem | OperatorBlockItem | FmuBlockItem
 
 
 def _pin_is_free(model, instance_id: UUID, pin_name: str, *, is_output: bool) -> bool:
+    """Output pins allow multiple connectors (fan-out); input pins allow at most one."""
+    if is_output:
+        return True
     root = model.root
     children = getattr(root, "children", None) or []
     for ch in children:
         if not isinstance(ch, Connector):
             continue
-        if is_output and ch.source_instance_id == instance_id and ch.source_pin == pin_name:
-            return False
-        if not is_output and ch.target_instance_id == instance_id and ch.target_pin == pin_name:
+        if ch.target_instance_id == instance_id and ch.target_pin == pin_name:
             return False
     return True
 
@@ -310,7 +320,13 @@ class ConnectorRouteSketchItem(QGraphicsObject):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(self._pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        path = _rounded_orthogonal_chain(pts, radius=14.0)
+        verts = vertical_obstacles_from_connector_edges(self.scene())
+        path = _rounded_orthogonal_chain(
+            pts,
+            14.0,
+            vertical_obstacles=verts,
+            bridge_radius=CONNECTOR_CROSSING_BRIDGE_R,
+        )
         painter.drawPath(path)
         painter.restore()
 

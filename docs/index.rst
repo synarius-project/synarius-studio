@@ -11,4 +11,5 @@ synarius-studio Documentation
 
    strategic_vision
    requirements/index
+   developer/index
 

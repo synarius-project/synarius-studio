@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from PySide6.QtCore import QByteArray, QRectF, Qt, QSize
+from PySide6.QtCore import QByteArray, QMimeData, QRectF, Qt, QSize
 from PySide6.QtGui import (
     QAction,
     QBrush,
     QColor,
+    QDrag,
     QFont,
     QGuiApplication,
     QIcon,
@@ -40,6 +41,8 @@ from PySide6.QtWidgets import (
 from synarius_core.controller import CommandError, SynariusController
 from synarius_core.model.data_model import ComplexInstance
 from synarius_core.parameters.repository import ParameterRecord
+
+from .diagram.placement_interactive import LIBRARY_ELEMENT_NAMED_DRAG_MIME
 
 from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH
 from .svg_icons import icon_from_tinted_svg_file, tint_breeze_symbolic_svg_markup
@@ -210,6 +213,38 @@ _ROLE_DS_NAME = Qt.ItemDataRole.UserRole          # dataset name (str)
 _ROLE_PARAM_NAME = Qt.ItemDataRole.UserRole + 1  # parameter name (str)
 _ROLE_PARAM_ID = Qt.ItemDataRole.UserRole + 2    # parameter UUID (str)
 _ROLE_KIND = Qt.ItemDataRole.UserRole + 3        # "dataset" | "param" | "search" | "_ph_"
+_ROLE_PARAM_CATEGORY = Qt.ItemDataRole.UserRole + 4  # parameter category (str)
+
+# Canvas-draggable categories and their std type_keys.
+_DRAG_CATEGORY_TYPE_KEY: dict[str, str] = {
+    "VALUE": "std.Kennwert",
+    "CURVE": "std.Kennlinie",
+    "MAP":   "std.Kennfeld",
+}
+
+
+class _ParamDragTree(QTreeWidget):
+    """QTreeWidget that initiates a ``LIBRARY_ELEMENT_NAMED_DRAG_MIME`` drag for VALUE/CURVE/MAP items."""
+
+    def startDrag(self, supported_actions: Qt.DropAction) -> None:  # type: ignore[override]
+        item = self.currentItem()
+        if item is None or item.data(0, _ROLE_KIND) != "param":
+            return
+        category = str(item.data(0, _ROLE_PARAM_CATEGORY) or "")
+        type_key = _DRAG_CATEGORY_TYPE_KEY.get(category.upper())
+        if type_key is None:
+            return  # MATRIX / ARRAY / ASCII — not canvas-draggable
+        param_name = str(item.data(0, _ROLE_PARAM_NAME) or "")
+        if not param_name:
+            return
+        mime = QMimeData()
+        mime.setData(
+            LIBRARY_ELEMENT_NAMED_DRAG_MIME,
+            f"{type_key}\0{param_name}".encode("utf-8"),
+        )
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
 
 # ---------------------------------------------------------------------------
 # Tree stylesheet
@@ -287,7 +322,7 @@ class ParametersTabPanel(QWidget):
         tb.addAction(self._act_delete)
 
         # ── Tree ─────────────────────────────────────────────────────────────
-        self._tree = QTreeWidget(self)
+        self._tree = _ParamDragTree(self)
         self._tree.setColumnCount(1)
         self._tree.setHeaderHidden(True)
         self._tree.header().hide()
@@ -295,6 +330,8 @@ class ParametersTabPanel(QWidget):
         self._tree.setIndentation(14)
         self._tree.setAlternatingRowColors(True)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._tree.setDragEnabled(True)
+        self._tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self._tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._tree.setUniformRowHeights(False)
         self._tree.setStyleSheet(_TREE_QSS)
@@ -461,6 +498,7 @@ class ParametersTabPanel(QWidget):
             p_item.setData(0, _ROLE_DS_NAME, ds.name)
             p_item.setData(0, _ROLE_PARAM_NAME, summary.name)
             p_item.setData(0, _ROLE_PARAM_ID, str(pid))
+            p_item.setData(0, _ROLE_PARAM_CATEGORY, summary.category)
             p_item.setText(0, summary.name)
             p_item.setToolTip(0, summary.name)
             p_item.setIcon(0, _category_icon(summary.category))

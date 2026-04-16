@@ -39,6 +39,8 @@ VARIABLE_NAME_DRAG_MIME = "application/x-synarius-variable-name"
 SIGNAL_NAME_DRAG_MIME = "application/x-synarius-signal-name"
 # Drag from Resources panel: UTF-8 ``<LibraryName>.<ElementId>`` (same as model ``type_key``).
 LIBRARY_ELEMENT_DRAG_MIME = "application/x-synarius-library-element"
+# Drag from Elements tab for a named existing instance: UTF-8 ``type_key\0instance_name``.
+LIBRARY_ELEMENT_NAMED_DRAG_MIME = "application/x-synarius-library-element-named"
 
 
 def _placing_block_size_scene(mode: str, preview: QGraphicsItem | None = None) -> tuple[float, float]:
@@ -163,24 +165,45 @@ def library_element_drop_command(controller: SynariusController, type_key: str, 
         return f"new Elementary {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1 type_key={shlex.quote(tk)}"
 
     if tk in STD_PARAM_LOOKUP:
-        # Param-lookup blocks (Kennwert/Kennlinie/Kennfeld) are parameter references — multiple
-        # canvas instances with the same name are valid (fan-out of the same parameter value).
-        # Do NOT apply _pick_unique_name here; the controller reuses an existing dataset entry.
-        kw = _PARAM_LOOKUP_KEYWORD[tk]
-        elem_name = base
-        if tk == "std.Kennwert":
-            # Variable-width block: centre on drop point using VARIABLE_HEIGHT for vertical offset.
-            from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
-            bw = variable_diagram_block_width_scene(elem_name)
-            tl = QPointF(c.x() - bw * 0.5, c.y() - VARIABLE_HEIGHT * 0.5)
-        else:
-            s = LOOKUP_BLOCK_SIZE
-            tl = QPointF(c.x() - s * 0.5, c.y() - s * 0.5)
-        mx = tl.x() / UI_SCALE
-        my = tl.y() / UI_SCALE
-        return f"new {kw} {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1"
+        # Library drop: always create a fresh parameter with a new unique default name.
+        existing = _existing_instance_names(controller.model)
+        elem_name = _pick_unique_name(existing, base)
+        return _param_lookup_place_command(tk, elem_name, c)
 
     return None
+
+
+def library_element_named_drop_command(
+    controller: SynariusController, type_key: str, name: str, scene_pos: QPointF
+) -> str | None:
+    """
+    Build a placement command for a named parameter instance dragged from the Elements tab.
+
+    Unlike :func:`library_element_drop_command`, the exact *name* is used so that the new canvas
+    block references the same logical parameter as the existing instance.
+    """
+    tk = type_key.strip()
+    from synarius_core.dataflow_sim._std_type_keys import STD_PARAM_LOOKUP
+
+    if tk not in STD_PARAM_LOOKUP:
+        return None
+    c = _snap_pos_half_module(scene_pos)
+    return _param_lookup_place_command(tk, name.strip(), c)
+
+
+def _param_lookup_place_command(tk: str, elem_name: str, c: QPointF) -> str:
+    """Shared helper: build ``new parameter/curve/map`` command for a centred drop point *c*."""
+    kw = _PARAM_LOOKUP_KEYWORD[tk]
+    if tk == "std.Kennwert":
+        from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
+        bw = variable_diagram_block_width_scene(elem_name)
+        tl = QPointF(c.x() - bw * 0.5, c.y() - VARIABLE_HEIGHT * 0.5)
+    else:
+        s = LOOKUP_BLOCK_SIZE
+        tl = QPointF(c.x() - s * 0.5, c.y() - s * 0.5)
+    mx = tl.x() / UI_SCALE
+    my = tl.y() / UI_SCALE
+    return f"new {kw} {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1"
 
 
 def variable_new_instance_command(name: str, scene_pos: QPointF) -> str:

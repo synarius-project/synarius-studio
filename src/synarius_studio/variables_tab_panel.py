@@ -24,7 +24,7 @@ from synarius_core.controller import SynariusController
 from synarius_core.dataflow_sim._std_type_keys import STD_PARAM_LOOKUP
 from synarius_core.model import ElementaryInstance
 
-from .diagram.placement_interactive import LIBRARY_ELEMENT_DRAG_MIME, VARIABLE_NAME_DRAG_MIME
+from .diagram.placement_interactive import LIBRARY_ELEMENT_NAMED_DRAG_MIME, VARIABLE_NAME_DRAG_MIME
 from .parameters_tab_panel import _category_icon
 from .resources_panel import RESOURCES_PANEL_FIXED_WIDTH, RESOURCES_PANEL_SIDE_MARGIN
 from .theme import (
@@ -72,7 +72,8 @@ class _ElementsDragTable(QTableWidget):
         drag = QDrag(self)
         mime = QMimeData()
         if kind == "param_lookup":
-            mime.setData(LIBRARY_ELEMENT_DRAG_MIME, payload.encode("utf-8"))
+            type_key, inst_name = payload  # stored as (type_key, inst_name)
+            mime.setData(LIBRARY_ELEMENT_NAMED_DRAG_MIME, f"{type_key}\0{inst_name}".encode("utf-8"))
         else:
             mime.setData(VARIABLE_NAME_DRAG_MIME, payload.encode("utf-8"))
         drag.setMimeData(mime)
@@ -185,7 +186,7 @@ class VariablesTabPanel(QWidget):
             name_item.setIcon(_category_icon(category))
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             name_item.setData(_ROW_KIND_ROLE, "param_lookup")
-            name_item.setData(_ROW_DATA_ROLE, type_key)
+            name_item.setData(_ROW_DATA_ROLE, (type_key, inst_name))
             count_item = QTableWidgetItem(str(count))
             count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             count_item.setFlags(count_item.flags() & ~Qt.ItemFlag.ItemIsEditable)

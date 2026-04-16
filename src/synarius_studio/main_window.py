@@ -2672,20 +2672,21 @@ class MainWindow(QMainWindow):
         self._live_viewer_autorange_tick += 1
 
     @staticmethod
-    def _format_orthogonal_bends_csv(bends: list[float]) -> str:
+    def _format_orthogonal_bends_list(bends: list[float]) -> str:
+        """Format as Python list literal so ``parse_value`` always returns a list, not a bare number."""
         parts: list[str] = []
         for v in bends:
             s = f"{float(v):.12g}"
             if "." in s:
                 s = s.rstrip("0").rstrip(".")
             parts.append(s)
-        return ",".join(parts)
+        return "[" + ",".join(parts) + "]"
 
     def _apply_connector_orthogonal_bends(self, connector: Connector, bends: list[float]) -> bool:
         """Persist connector routing via Controller Command Protocol (loggable ``set``)."""
         token = connector.hash_name
-        csv = self._format_orthogonal_bends_csv(bends)
-        cmd = f"set {token}.orthogonal_bends {csv}"
+        lst = self._format_orthogonal_bends_list(bends)
+        cmd = f"set {token}.orthogonal_bends {lst}"
         prompt = str(self._controller.current.get("prompt_path"))
         self.console.insert_log_before_current_prompt(f"{prompt}> {cmd}", DEFAULT_PROMPT_COLOR)
         try:

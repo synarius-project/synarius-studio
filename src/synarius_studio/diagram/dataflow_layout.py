@@ -21,6 +21,7 @@ from .dataflow_items import (
     OperatorBlockItem,
     UI_SCALE,
     VariableBlockItem,
+    refresh_all_connector_crossing_strokes,
 )
 
 if TYPE_CHECKING:
@@ -137,5 +138,7 @@ def populate_scene_from_model(
         edge.set_bends_apply_fn(on_connector_orthogonal_bends)
         edge.attach_blocks(a, b, child.source_pin, child.target_pin)
         scene.addItem(edge)
+
+    refresh_all_connector_crossing_strokes(scene)
 
     scene.setSceneRect(SCENE_RECT)
