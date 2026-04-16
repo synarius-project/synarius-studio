@@ -149,21 +149,27 @@ def library_element_drop_command(controller: SynariusController, type_key: str, 
     _lib_name, elem_id = tk.split(".", 1)
     from synarius_core.dataflow_sim._std_type_keys import STD_ARITHMETIC_OP, STD_PARAM_LOOKUP
 
-    existing = _existing_instance_names(controller.model)
     c = _snap_pos_half_module(scene_pos)
     base = elem_id.lower()
-    elem_name = _pick_unique_name(existing, base)
 
     if tk in STD_ARITHMETIC_OP:
+        # Arithmetic ops must be unique on the canvas (they are independent computation nodes).
+        existing = _existing_instance_names(controller.model)
+        elem_name = _pick_unique_name(existing, base)
         w = OPERATOR_SIZE
         tl = QPointF(c.x() - w * 0.5, c.y() - w * 0.5)
         mx = tl.x() / UI_SCALE
         my = tl.y() / UI_SCALE
         return f"new Elementary {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1 type_key={shlex.quote(tk)}"
+
     if tk in STD_PARAM_LOOKUP:
+        # Param-lookup blocks (Kennwert/Kennlinie/Kennfeld) are parameter references — multiple
+        # canvas instances with the same name are valid (fan-out of the same parameter value).
+        # Do NOT apply _pick_unique_name here; the controller reuses an existing dataset entry.
         kw = _PARAM_LOOKUP_KEYWORD[tk]
+        elem_name = base
         if tk == "std.Kennwert":
-            # Variable-width block: centre on drop point using VARIABLE_HEIGHT for vertical offset
+            # Variable-width block: centre on drop point using VARIABLE_HEIGHT for vertical offset.
             from synarius_core.model.diagram_geometry import variable_diagram_block_width_scene
             bw = variable_diagram_block_width_scene(elem_name)
             tl = QPointF(c.x() - bw * 0.5, c.y() - VARIABLE_HEIGHT * 0.5)
@@ -173,6 +179,7 @@ def library_element_drop_command(controller: SynariusController, type_key: str, 
         mx = tl.x() / UI_SCALE
         my = tl.y() / UI_SCALE
         return f"new {kw} {shlex.quote(elem_name)} {mx:.12g} {my:.12g} 1"
+
     return None
 
 
