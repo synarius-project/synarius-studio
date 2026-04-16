@@ -11,6 +11,7 @@ class SynariusDiagramScene(QGraphicsScene):
 
     variable_sim_binding_toggle = Signal(object, str, bool)
     open_dataviewer_requested = Signal(object)
+    open_kenngroesse_requested = Signal(object)  # ElementaryInstance (std.Kennwert/Kennlinie/Kennfeld)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

@@ -259,8 +259,75 @@ _TREE_QSS = with_tooltip_qss(
 )
 
 
-# (Parameter view is handled by CalibrationMapShell / build_scalar_calibration_readonly_widget
-#  from synariustools.tools.calmapwidget — imported lazily in _open_parameter_viewer.)
+# ---------------------------------------------------------------------------
+# Shared parameter viewer (used by ParametersTabPanel and canvas double-click)
+# ---------------------------------------------------------------------------
+
+
+def open_parameter_viewer_for_record(record: ParameterRecord, parent: QWidget | None = None) -> None:
+    """Open the synariustools CalibrationMap viewer for *record*.
+
+    Falls back to a plain-text dialog when synariustools is not installed.
+    This function is the single implementation shared by the parameter panel
+    tree (double-click on a parameter row) and the canvas (double-click on a
+    Kennwert / Kennlinie / Kennfeld block).
+    """
+    try:
+        from synariustools.tools.calmapwidget import (  # type: ignore[import-untyped]
+            CalibrationMapData,
+            build_scalar_calibration_readonly_widget,
+            create_calibration_map_viewer,
+            supports_calibration_plot,
+            supports_calibration_scalar_edit,
+        )
+    except ImportError:
+        dlg = QDialog(parent, Qt.WindowType.Window)
+        dlg.setWindowTitle(f"{record.name}  [{record.category}]")
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        lay = QVBoxLayout(dlg)
+        te = QPlainTextEdit(dlg)
+        te.setReadOnly(True)
+        te.setPlainText(
+            record.text_value if record.is_text
+            else f"Shape: {record.values.shape}\n\n{record.values!r}"
+        )
+        te.setStyleSheet("font-family: monospace; font-size: 12px;")
+        lay.addWidget(te)
+        dlg.resize(420, 280)
+        dlg.show()
+        return
+
+    data = CalibrationMapData.from_parameter_record(record)
+
+    dlg = QDialog(parent, Qt.WindowType.Window)
+    dlg.setWindowTitle(f"{record.name}  [{record.category}]")
+    dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+
+    if supports_calibration_scalar_edit(record):
+        w = build_scalar_calibration_readonly_widget(dlg, data)
+        lay.addWidget(w)
+        dlg.resize(320, 180)
+    elif supports_calibration_plot(record):
+        shell = create_calibration_map_viewer(data, parent=dlg, embedded=True)
+        if hasattr(shell, "attach_dialog_close_guard"):
+            shell.attach_dialog_close_guard(dlg)
+        lay.addWidget(shell, 1)
+        sh = shell.sizeHint()
+        dlg.resize(sh.width(), sh.height())
+    else:
+        te = QPlainTextEdit(dlg)
+        te.setReadOnly(True)
+        te.setPlainText(record.text_value)
+        te.setStyleSheet("font-family: monospace; font-size: 12px;")
+        lay.addWidget(te)
+        dlg.resize(420, 280)
+
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
 
 
 # ---------------------------------------------------------------------------
@@ -547,66 +614,7 @@ class ParametersTabPanel(QWidget):
 
     def _open_parameter_viewer(self, record: ParameterRecord) -> None:
         """Open the synariustools CalibrationMap viewer — exactly as ParaWiz does."""
-        try:
-            from synariustools.tools.calmapwidget import (  # type: ignore[import-untyped]
-                CalibrationMapData,
-                build_scalar_calibration_readonly_widget,
-                create_calibration_map_viewer,
-                supports_calibration_plot,
-                supports_calibration_scalar_edit,
-            )
-        except ImportError:
-            # synariustools not installed: fall back to plain-text summary.
-            dlg = QDialog(self, Qt.WindowType.Window)
-            dlg.setWindowTitle(f"{record.name}  [{record.category}]")
-            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-            lay = QVBoxLayout(dlg)
-            te = QPlainTextEdit(dlg)
-            te.setReadOnly(True)
-            te.setPlainText(
-                record.text_value if record.is_text
-                else f"Shape: {record.values.shape}\n\n{record.values!r}"
-            )
-            te.setStyleSheet("font-family: monospace; font-size: 12px;")
-            lay.addWidget(te)
-            dlg.resize(420, 280)
-            dlg.show()
-            return
-
-        data = CalibrationMapData.from_parameter_record(record)
-
-        dlg = QDialog(self, Qt.WindowType.Window)
-        dlg.setWindowTitle(f"{record.name}  [{record.category}]")
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-
-        if supports_calibration_scalar_edit(record):
-            # Scalar: read-only display (no write-back in Studio).
-            w = build_scalar_calibration_readonly_widget(dlg, data)
-            lay.addWidget(w)
-            dlg.resize(320, 180)
-        elif supports_calibration_plot(record):
-            # Kennlinie / Kennfeld: full shell with table + plot.
-            shell = create_calibration_map_viewer(data, parent=dlg, embedded=True)
-            if hasattr(shell, "attach_dialog_close_guard"):
-                shell.attach_dialog_close_guard(dlg)
-            lay.addWidget(shell, 1)
-            sh = shell.sizeHint()
-            dlg.resize(sh.width(), sh.height())
-        else:
-            # ASCII / text fallback.
-            te = QPlainTextEdit(dlg)
-            te.setReadOnly(True)
-            te.setPlainText(record.text_value)
-            te.setStyleSheet("font-family: monospace; font-size: 12px;")
-            lay.addWidget(te)
-            dlg.resize(420, 280)
-
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
+        open_parameter_viewer_for_record(record, self)
 
     # ── Toolbar action handlers ───────────────────────────────────────────
     def _on_load_clicked(self) -> None:

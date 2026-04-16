@@ -1,0 +1,139 @@
+# Demonstration: zwei Kennlinien + zwei Kennfelder mit kubischen Polynomen
+#
+# Parameterfunktionen (Polynome 3. Ordnung):
+#   KL1: y = 0.001*x^3 - 0.05*x^2 + 1.5*x + 2.0     x in [0, 50]
+#   KL2: y = -0.002*x^3 + 0.1*x^2 - 0.5*x + 3.0      x in [-5, 20]
+#   KF1: z = 0.001*x^3 - 0.002*y^3 + 0.5*x + 0.5*y + 1.0   x,y in [0, 20]
+#   KF2: z = 0.0005*x^3 + 0.001*y^3 - 0.3*x + 0.2*y + 5.0  x in [-10,20], y in [0,30]
+#
+# Stimulationen:
+#   x_kl1: Rampe 0 -> 50  (Kennlinie 1 vollstaendig durchfahren)
+#   x_kl2: Rampe -5 -> 20 (Kennlinie 2 vollstaendig durchfahren)
+#   x_kf1: Sinus 0..20   |  y_kf1: Rampe 0 -> 20  (Lissajous durch KF1)
+#   x_kf2: Rampe -10..20 |  y_kf2: Sinus 0..30   (Lissajous durch KF2)
+
+# ---------------------------------------------------------------------------
+# Eingangsvariablen (Stimulusquellen)
+# ---------------------------------------------------------------------------
+
+new Variable x_kl1 -407.5 -152.5 1
+new Variable x_kl2 -407.5 -32.5 1
+new Variable x_kf1 -415 77.5 1
+new Variable y_kf1 -415 127.5 1
+new Variable x_kf2 -415 240 1
+new Variable y_kf2 -415 290 1
+
+# ---------------------------------------------------------------------------
+# Ausgangsvariablen (Messsonden)
+# ---------------------------------------------------------------------------
+
+new Variable out_kl1 -40 -152.5 1
+new Variable out_kl2 -40 -32.5 1
+new Variable out_kf1 -40 87.5 1
+new Variable out_kf2 -40 257.5 1
+
+# ---------------------------------------------------------------------------
+# Oszilloskop (DataViewer): alle vier Ausgaenge messen
+# ---------------------------------------------------------------------------
+
+new DataViewer 350 185
+set out_kl1.dataviewer_measure_ids [1]
+set out_kl2.dataviewer_measure_ids [1]
+set out_kf1.dataviewer_measure_ids [1]
+set out_kf2.dataviewer_measure_ids [1]
+set @main.last_selected_dataviewer_id 1
+
+# ---------------------------------------------------------------------------
+# Parametersaetze laden
+# Relative Pfade beziehen sich auf den Ordner dieser .syn-Datei.
+# ---------------------------------------------------------------------------
+
+cd @main/parameters/data_sets
+
+new DataSet kenngroessen_poly3 source_path=kenngroessen_poly3.dcm source_format=dcm
+cd kenngroessen_poly3
+import -dcm=kenngroessen_poly3.dcm
+cd ..
+
+new DataSet kenngroessen_nullen source_path=kenngroessen_nullen.dcm source_format=dcm
+cd kenngroessen_nullen
+import -dcm=kenngroessen_nullen.dcm
+cd ..
+
+# ---------------------------------------------------------------------------
+# Aktiven Datensatz setzen – muss VOR new curve/map erfolgen,
+# damit parameter_ref automatisch verdrahtet wird.
+# ---------------------------------------------------------------------------
+
+cd @main
+set @main/parameters.active_dataset_name kenngroessen_poly3
+
+# ---------------------------------------------------------------------------
+# Kenngroessen-Bloecke (new curve/map reused existierende CAL_PARAMs aus DCM
+# und setzt parameter_ref automatisch)
+# ---------------------------------------------------------------------------
+
+new curve KL1 -172.5 -182.5 1
+new curve KL2 -172.5 -62.5 1
+new map KF1 -172.5 57.5 1
+new map KF2 -172.5 227.5 1
+
+# ---------------------------------------------------------------------------
+# Verbindungen: Stimuli -> Kenngroessen -> Ausgaenge
+# ---------------------------------------------------------------------------
+
+new Connector x_kl1 KL1 source_pin=out target_pin=x
+new Connector KL1 out_kl1 source_pin=out target_pin=in
+
+new Connector x_kl2 KL2 source_pin=out target_pin=x
+new Connector KL2 out_kl2 source_pin=out target_pin=in
+
+new Connector x_kf1 KF1 source_pin=out target_pin=x
+new Connector y_kf1 KF1 source_pin=out target_pin=y
+new Connector KF1 out_kf1 source_pin=out target_pin=in
+
+new Connector x_kf2 KF2 source_pin=out target_pin=x
+new Connector y_kf2 KF2 source_pin=out target_pin=y
+new Connector KF2 out_kf2 source_pin=out target_pin=in
+
+# ---------------------------------------------------------------------------
+# Stimulation: Wertebereiche der Achsen vollstaendig abfahren
+# ---------------------------------------------------------------------------
+
+# x_kl1: Rampe 0 -> 50 in 10 s  (KL1-Achse vollstaendig)
+set x_kl1.stim_kind ramp
+set x_kl1.stim_ramp_offset 0
+set x_kl1.stim_ramp_slope 5.0
+
+# x_kl2: Rampe -5 -> 20 in 10 s  (KL2-Achse vollstaendig)
+set x_kl2.stim_kind ramp
+set x_kl2.stim_ramp_offset -5
+set x_kl2.stim_ramp_slope 2.5
+
+# KF1: Sinus auf x, Rampe auf y -> Lissajous-Muster durch [0,20]x[0,20]
+set x_kf1.stim_kind sine
+set x_kf1.stim_sine_offset 10
+set x_kf1.stim_sine_amplitude 10
+set x_kf1.stim_sine_frequency_hz 0.4
+set x_kf1.stim_sine_phase_deg 0
+
+set y_kf1.stim_kind ramp
+set y_kf1.stim_ramp_offset 0
+set y_kf1.stim_ramp_slope 2.0
+
+# KF2: Rampe auf x, Sinus auf y -> Lissajous-Muster durch [-10,20]x[0,30]
+set x_kf2.stim_kind ramp
+set x_kf2.stim_ramp_offset -10
+set x_kf2.stim_ramp_slope 3.0
+
+set y_kf2.stim_kind sine
+set y_kf2.stim_sine_offset 15
+set y_kf2.stim_sine_amplitude 15
+set y_kf2.stim_sine_frequency_hz 0.25
+set y_kf2.stim_sine_phase_deg 0
+
+# ---------------------------------------------------------------------------
+# Simulationsmodus aktivieren
+# ---------------------------------------------------------------------------
+
+set @main.simulation_mode true

@@ -106,7 +106,7 @@ from .theme import (
 )
 from .studio_paths import studio_library_extra_roots, studio_lib_dir, studio_plugins_dir
 from .variables_tab_panel import build_variables_tab_panel
-from .parameters_tab_panel import build_parameters_tab_panel
+from .parameters_tab_panel import build_parameters_tab_panel, open_parameter_viewer_for_record
 from .diagram import DataflowGraphicsView, populate_scene_from_model
 from .diagram.dataflow_items import (
     UI_SCALE,
@@ -404,6 +404,7 @@ class _RunLoopWorker(QObject):
                 dt_s=self._dt_s,
                 plugin_registry=self._plugin_registry,
                 model_directory=self._model_directory,
+                param_runtime=self._model.parameter_runtime(),
             )
             self._engine.context.options["fmu_apply_parameters_on_init"] = bool(
                 self._apply_fmu_params_on_init
@@ -579,6 +580,9 @@ class MainWindow(QMainWindow):
         self._diagram_scene.variable_sim_binding_toggle.connect(self._on_variable_sim_binding_toggle)
         self._diagram_scene.open_dataviewer_requested.connect(
             self._on_dataviewer_canvas_open_widget_command
+        )
+        self._diagram_scene.open_kenngroesse_requested.connect(
+            self._on_kenngroesse_canvas_open_editor
         )
         # Strong refs to scene wrappers from ``items()``; PySide6 may drop items when these go away.
         self._diagram_item_refs: list[QGraphicsItem] = []
@@ -2032,6 +2036,23 @@ class MainWindow(QMainWindow):
         self._run_worker = None
         self._run_thread = None
 
+    def closeEvent(self, event) -> None:  # noqa: ANN001
+        """Stop the simulation thread gracefully before the window is destroyed.
+
+        Without this, Qt destroys ``_run_thread`` as a child object while the
+        thread is still running, which triggers the fatal
+        ``QThread: Destroyed while thread '' is still running`` abort.
+        """
+        if self._run_thread is not None and self._run_thread.isRunning():
+            if self._run_worker is not None:
+                self._run_worker.request_stop()
+            self._run_thread.quit()
+            self._run_thread.wait(3000)  # max 3 s; then force-terminate
+            if self._run_thread.isRunning():
+                self._run_thread.terminate()
+                self._run_thread.wait(1000)
+        super().closeEvent(event)
+
     def _record_default_dir(self) -> Path:
         if self._record_last_dir is not None and self._record_last_dir.is_dir():
             return self._record_last_dir
@@ -2308,6 +2329,19 @@ class MainWindow(QMainWindow):
         """Canvas double-click: same as CCP ``set <DataViewer>.open_widget true``."""
         h = shlex.quote(dv.hash_name)
         self._run_protocol_lines_as_console([f"set {h}.open_widget true"])
+
+    def _on_kenngroesse_canvas_open_editor(self, el: ElementaryInstance) -> None:
+        """Canvas double-click on Kennwert / Kennlinie / Kennfeld: open the parameter viewer."""
+        try:
+            ref = str(el.get("parameter_ref"))
+            rt = self._controller.model.parameter_runtime()
+            cal_param_node = rt.resolve_cal_param_node(ref)
+            record = rt.repo.get_record(cal_param_node.id)
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Parameter", f"Kein Parameter verknüpft:\n{exc}")
+            return
+        open_parameter_viewer_for_record(record, self)
 
     def _close_live_dataviewers_for_sim_mode_exit(self) -> None:
         """Remember open live DataViewer dialogs and close them when leaving experiment mode."""

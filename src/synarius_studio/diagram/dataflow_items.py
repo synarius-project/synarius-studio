@@ -1486,6 +1486,21 @@ class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self.setAcceptHoverEvents(enabled)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if enabled else Qt.MouseButton.NoButton)
 
+    def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # type: ignore[override]
+        if self._el.type_key in STD_PARAM_LOOKUP:
+            scene = self.scene()
+            if scene is not None:
+                try:
+                    from .diagram_scene import SynariusDiagramScene
+                    if isinstance(scene, SynariusDiagramScene):
+                        scene.open_kenngroesse_requested.emit(self._el)
+                        scene.suppress_next_left_release_selection_sync()
+                        event.accept()
+                        return
+                except Exception:
+                    pass
+        super().mouseDoubleClickEvent(event)
+
     def paint(
         self,
         painter: QPainter,
