@@ -139,7 +139,8 @@ jobs:
         shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: PyInstaller (one-file, Qt plugins + package data)
-        run: pyinstaller --noconfirm --clean synarius_studio.spec
+        # ``pyinstaller`` is not always on PATH in Git-Bash on Windows; ``python -m PyInstaller`` is reliable.
+        run: python -m PyInstaller --noconfirm --clean synarius_studio.spec
         shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Smoke test bundled EXE startup

@@ -70,7 +70,7 @@ jobs:
         shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Build onedir bundle
-        run: pyinstaller --noconfirm --clean synarius_studio_onedir.spec
+        run: python -m PyInstaller --noconfirm --clean synarius_studio_onedir.spec
         shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Smoke test onedir startup
