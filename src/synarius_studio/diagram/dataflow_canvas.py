@@ -22,6 +22,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QMessageBox
 
 from synarius_core.controller import SynariusController
+from synarius_core.dataflow_sim._std_type_keys import STD_PARAM_LOOKUP
 from synarius_core.variable_naming import InvalidVariableNameError
 
 from ..theme import SELECTION_HIGHLIGHT_TEXT, selection_highlight_qcolor
@@ -158,6 +159,7 @@ class DataflowGraphicsView(QGraphicsView):
         self._pan_h_scroll = 0
         self._pan_v_scroll = 0
         self._move_anchor_snapshot: dict[int, QPointF] | None = None
+        self._pending_selection_change: tuple[set, set] | None = None
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
         self.viewport().setCursor(self._arrow_cursor)
@@ -318,16 +320,26 @@ class DataflowGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
+        sc = self.scene()
         if event.button() == Qt.MouseButton.LeftButton:
             self._cancel_deferred_scene_left_release()
+            self._pending_selection_change = None
         if self._interaction_locked:
             dv = self._dataviewer_block_under(self, pos)
             if event.button() == Qt.MouseButton.LeftButton and dv is not None:
+                _pre_sel = set(sc.selectedItems()) if sc is not None else set()
                 super().mousePressEvent(event)
-                if self.scene() is not None:
+                if sc is not None:
+                    _post_sel = set(sc.selectedItems())
+                    if _post_sel != _pre_sel:
+                        self._pending_selection_change = (_pre_sel, _post_sel)
+                        for it in _post_sel - _pre_sel:
+                            it.setSelected(False)
+                        for it in _pre_sel - _post_sel:
+                            it.setSelected(True)
                     self._move_anchor_snapshot = {
                         id(it): QPointF(it.pos())
-                        for it in self.scene().selectedItems()
+                        for it in _post_sel
                         if isinstance(it, DataViewerBlockItem)
                     }
                 return
@@ -378,11 +390,19 @@ class DataflowGraphicsView(QGraphicsView):
             self.viewport().setCursor(self._closed_hand)
             event.accept()
             return
+        _pre_sel = set(sc.selectedItems()) if sc is not None else set()
         super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton and self.scene() is not None:
+        if event.button() == Qt.MouseButton.LeftButton and sc is not None:
+            _post_sel = set(sc.selectedItems())
+            if _post_sel != _pre_sel and self._item_under(pos):
+                self._pending_selection_change = (_pre_sel, _post_sel)
+                for it in _post_sel - _pre_sel:
+                    it.setSelected(False)
+                for it in _pre_sel - _post_sel:
+                    it.setSelected(True)
             self._move_anchor_snapshot = {
                 id(it): QPointF(it.pos())
-                for it in self.scene().selectedItems()
+                for it in _post_sel
                 if isinstance(it, (VariableBlockItem, OperatorBlockItem, FmuBlockItem, DataViewerBlockItem))
             }
 
@@ -418,6 +438,18 @@ class DataflowGraphicsView(QGraphicsView):
         else:
             self._cursor_hint_empty_canvas(vp_pos)
 
+    def _apply_pending_selection_change(self) -> None:
+        """Apply a selection change that was deferred from mousePressEvent to mouseReleaseEvent."""
+        pending = self._pending_selection_change
+        self._pending_selection_change = None
+        if pending is None or self.scene() is None:
+            return
+        pre, post = pending
+        for it in post - pre:
+            it.setSelected(True)
+        for it in pre - post:
+            it.setSelected(False)
+
     def _emit_scene_left_release_maybe_skip_selection_sync(self) -> None:
         """Emit ``scene_left_release`` unless a handled item double-click requested a one-time skip (avoids duplicate ``select``)."""
         sc = self.scene()
@@ -427,6 +459,7 @@ class DataflowGraphicsView(QGraphicsView):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._pan_active:
+            self._pending_selection_change = None
             self._pan_active = False
             self._pan_viewport_pos = None
             pos = event.position().toPoint()
@@ -450,6 +483,7 @@ class DataflowGraphicsView(QGraphicsView):
             if self._route_tool.active():
                 self._route_tool.on_left_release(scene_pos, top)
                 event.accept()
+                self._apply_pending_selection_change()
                 self._emit_scene_left_release_maybe_skip_selection_sync()
                 self._emit_block_move_finished_if_uniform()
                 return
@@ -458,11 +492,13 @@ class DataflowGraphicsView(QGraphicsView):
                 # mouseRelease after its mousePress (super delivered press in mousePressEvent).
                 event.accept()
                 super().mouseReleaseEvent(event)
+                self._apply_pending_selection_change()
                 self._emit_scene_left_release_maybe_skip_selection_sync()
                 self._emit_block_move_finished_if_uniform()
                 return
         super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
+            self._apply_pending_selection_change()
             self._post_left_release_selection_and_block_move(event)
 
     def _emit_block_move_finished_if_uniform(self) -> None:
@@ -489,13 +525,19 @@ class DataflowGraphicsView(QGraphicsView):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if self._interaction_locked:
-            # Im Simulationsmodus sind nur DataViewer interaktiv; Doppelklick soll dort durchgehen,
-            # damit das Item ein Widget öffnen kann.
+            # Im Simulationsmodus: DataViewer und Kenngrößen-Blöcke erhalten Doppelklick.
             pos = event.position().toPoint()
-            dv = self._dataviewer_block_under(self, pos)
-            if event.button() == Qt.MouseButton.LeftButton and dv is not None:
-                super().mouseDoubleClickEvent(event)
-                return
+            if event.button() == Qt.MouseButton.LeftButton:
+                dv = self._dataviewer_block_under(self, pos)
+                if dv is not None:
+                    super().mouseDoubleClickEvent(event)
+                    return
+                top = self.itemAt(pos)
+                while top is not None and not isinstance(top, FmuBlockItem):
+                    top = top.parentItem()
+                if isinstance(top, FmuBlockItem) and top._el.type_key in STD_PARAM_LOOKUP:
+                    super().mouseDoubleClickEvent(event)
+                    return
             event.accept()
             return
         if (
@@ -584,13 +626,23 @@ class DataflowGraphicsView(QGraphicsView):
             self._sync_scrollbar_policy_for_scene_origin()
             return
 
-        # Zoom (no Ctrl/Shift)
+        # Zoom anchored to mouse cursor position.
         factor = 1.15 ** (delta / 240.0)
-        if factor != 1.0:
-            self.scale(factor, factor)
-            self.zoom_percent_changed.emit(self.zoom_percent())
         event.accept()
+        if factor == 1.0:
+            return
+        mouse_vp = event.position().toPoint()
+        scene_anchor = self.mapToScene(mouse_vp)
+        # NoAnchor: Qt leaves scrollbars untouched during scale; we position manually below.
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.scale(factor, factor)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        # Sync scrollbar policy first (may change viewport geometry), then anchor.
         self._sync_scrollbar_policy_for_scene_origin()
+        drift = self.mapFromScene(scene_anchor) - mouse_vp
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + drift.x())
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + drift.y())
+        self.zoom_percent_changed.emit(self.zoom_percent())
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if self._interaction_locked:

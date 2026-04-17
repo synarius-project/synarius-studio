@@ -1,156 +1,131 @@
-# synarius-studio (SN Studio)
+# Synarius Studio
 
 ![Synarius title image](docs/_static/synarius-title.png)
 
-Graphical simulation tool with a PySide6 GUI for Synarius.
+**Synarius Studio is a PySide6 desktop application for graphically modeling systems, wiring simulations, and watching results**—built on the same Python project and data model as the rest of Synarius.
 
 **Python 3.11–3.14** is supported (see `requires-python` in `pyproject.toml`). Use a **virtual environment** and the **same** interpreter for `pip`/`python` and for your IDE.
 
 **Contributing:** follow the **[Synarius programming guidelines](https://synarius-project.github.io/synarius-guidelines/programming_guidelines.html)** (HTML) and this repository’s **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
-![Synarius Studio — diagram canvas, library, and console](docs/images/SynariusStudio.png)
+## What is this?
 
-## Try out!
-Download latest Windows installer (MSI): https://github.com/synarius-project/synarius-studio/releases/latest
+Synarius Studio is the **main graphical entry point** into Synarius: you work on a **diagram canvas**, use libraries and inspectors, and drive **simulation and measurement** through the shared **synarius-core** backend. It is where most people **see** Synarius as a product.
 
-## Vision
+## What can I do with it?
 
-- Synarius Studio (SN Studio) is the graphical simulation modeling and visualization environment.
-- The default language for code generation in SN Studio is Python.
-- A clear separation is maintained:
-  - Simulation backend: `synarius_core` (GUI-less framework)
-  - GUI / modeling / visualization: `synarius_studio` (SN Studio)
-- Over time, system modeling in SN Studio will be generalized, enabling "regional dialects" for graphical simulation.
-  - This will be achieved by generalizing the underlying process-ontological concepts and adapting them for various use cases (MBSE, audio, microcontroller programming, dynamic system simulation, load flow optimization, general optimization, ...).
-- The core system is open source. Extended commercial licensing models for add-on modules or enterprise requirements remain optional.
+- **Lay out a system** with blocks and connectors (project-oriented workflow).
+- **Configure stimulation and measurement** for runs driven by the backend.
+- **Observe signals** with built-in plotting patterns (including live-style views where the stack supports it).
+- **Use companion tooling** that ships with Synarius (for example embedded or linked **DataViewer**-style views for time-series).
 
-### Long-term perspective: Python simulation & optimization stacks
+## Quickstart (about 5 minutes)
 
-Over the long term, Synarius Studio may serve as a **graphical front-end** that prepares models, parameters, and experiment definitions and **delegates execution** to mature Python ecosystems—alongside or instead of bespoke paths in `synarius_core`. Examples of such stacks (not commitments; direction of travel):
+### Option A — Windows: install and run
 
-| Stack | Typical role |
-|-------|----------------|
-| **SciPy** | Numerical methods and **ODE** integration (`scipy.integrate` and related APIs) for continuous-time dynamics. |
-| **SimPy** | **Discrete-event**, process-based simulation (queues, resources, stochastic processes). |
-| **Pyomo** | **Algebraic optimization** and constraint modeling (LP/MIP/NLP and related solvers). |
+1. Download the **latest MSI** from **[Releases](https://github.com/synarius-project/synarius-studio/releases/latest)** and install it.
+2. Start **Synarius Studio** from the Start menu (or the shortcut the installer created).
+3. You should see the **main window**: diagram canvas, library or browser-style panels, and supporting UI (see screenshot below).
 
-Integration would likely use the existing **plugin** and **controller** boundaries so that the GUI stays decoupled from any one backend. Nothing here replaces near-term roadmap items; it describes **architectural headroom** for MBSE-style and operations-research workflows.
+### Option B — From source (monorepo-style checkout)
 
-## Goals (scope)
+Typical layout: sibling folders `synarius-studio/`, `synarius-core/`, and `synarius-apps/` (Studio’s `pyproject.toml` references those paths).
 
-SN Studio is responsible for:
-
-- Graphical modeling (including connector wiring and system structure).
-- Dialect / syntax extensions for graphical simulation (e.g. variants of the MH syntax).
-- Visualization and observation (e.g. graphical oscilloscopes for real-time observation).
-- Project persistence (load/save) in cooperation with SN Core.
-- Preparing simulation execution (delegation to SN Core).
-
-## Roadmap
-
-### 1.0
-
-- Representation and connection of multiple FMUs via connectors (project modeling).
-- Loading and saving projects (based on the core data structure).
-- Stimulation / measurement setup in the GUI (UI drives the backend simulation).
-- Saving measurement results (UI provides data visualization; backend stores results).
-- Graphical oscilloscopes for real-time observation of the simulation.
-- Integration of signal generators and measurement files (configured via the GUI).
-
-### 1.X
-
-- Modularization via plugin interfaces (GUI/workflow extensions, and later, optional core support).
-- Extension of the original MH syntax.
-- Arduino support as a plugin.
-- Support for lookup tables and characteristic curves.
-- Support for DCM and HDF5 files (optional: other formats like par [CANape], ASAM CDF/CDFX, CSV).
-
-## Develop / Run (monorepo)
-
-Studio declares **PySide6** and local siblings (`synarius-apps`, `synarius-core`) in `pyproject.toml`. Install from the **`synarius-studio`** directory so `pip` pulls those dependencies into **one** environment.
-
-1. **Create and activate a venv** (examples):
+1. Create and activate a venv (example on Windows):
 
    ```bash
-   # Windows (adjust Python launcher if needed)
    py -3.12 -m venv .venv
    .venv\Scripts\activate
    ```
 
-   ```bash
-   # Linux / macOS
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-
-2. **Install Studio in editable mode** (from `synarius-studio/` with sibling checkouts `../synarius-core` and `../synarius-apps`):
+2. From **`synarius-studio/`**, install in editable mode:
 
    ```bash
    python -m pip install -U pip
    python -m pip install -e .
    ```
 
-3. **Optional:** install **synarius-apps** editable as well when you change that package frequently (Studio already depends on it for shared UI, e.g. dataviewer, terminal console):
-
-   ```bash
-   python -m pip install -e ../synarius-apps
-   ```
-
-4. **Verify PySide6** with the same `python` you use to run the app (avoids “wrong venv” / typo issues):
+3. Confirm **PySide6** resolves in *this* interpreter:
 
    ```bash
    python -c "from PySide6.QtCore import Qt, QTimer; print('PySide6 OK')"
    ```
 
-5. **Run** (after activation):
+4. Launch Studio:
 
    ```bash
    run-synarius-studio
    ```
 
-   Or module mode:
+   or:
 
    ```bash
    python -m synarius_studio
    ```
 
-6. **IDE:** set the workspace interpreter to this venv’s `python` (e.g. `.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on Unix).
+5. Point your IDE at the same `python` (for example `.venv\Scripts\python.exe` on Windows).
+
+If you change **synarius-apps** often, you can also install it editable: `python -m pip install -e ../synarius-apps`.
+
+## Example workflow
+
+1. **Open or create a project** in Studio.
+2. **Add blocks** from the library and **connect** them on the canvas to match your system structure.
+3. **Configure run settings** (stimulation / measurement as exposed by the UI and backend).
+4. **Run** and **inspect outputs**—including plots and, where integrated, DataViewer-style signal inspection.
+
+*(Exact menu labels evolve with releases; use in-app help or the Sphinx docs if something moved.)*
+
+## Screenshots / demo
+
+![Synarius Studio — diagram canvas, library, and console](docs/images/SynariusStudio.png)
+
+## Contributing
+
+**Why your contribution matters:** Studio is the **public face** of the project—polish here wins users and makes daily modeling easier.
+
+**Where help is welcome:** UX and layout, diagram editor behavior, documentation, Windows packaging, and bug triage.
+
+- **Issues:** https://github.com/synarius-project/synarius-studio/issues  
+- **Guidelines:** https://synarius-project.github.io/synarius-guidelines/programming_guidelines.html  
+- **This repo:** [CONTRIBUTING.md](CONTRIBUTING.md)
+
+## Architecture (short)
+
+- **This repository (`synarius_studio`)** — Qt UI, diagrams, project chrome, and orchestration.  
+- **[synarius-core](https://github.com/synarius-project/synarius-core)** — simulation backend, persistence, and domain logic **without** a GUI.  
+- **[synarius-apps](https://github.com/synarius-project/synarius-apps)** — shared Qt pieces (for example plotting widgets) and standalone tools Studio can reuse.
 
 ## Documentation
 
-- Live docs: https://synarius-project.github.io/synarius-studio/
-- Docs source: https://github.com/synarius-project/synarius-studio/tree/main/docs
-- Long-term backend perspective (SciPy ODE, SimPy, Pyomo): see `docs/strategic_vision.rst` (Sphinx: *Strategic vision: Python backends*).
+- **Live docs:** https://synarius-project.github.io/synarius-studio/  
+- **Sources:** https://github.com/synarius-project/synarius-studio/tree/main/docs  
+- Long-term backend perspective (SciPy, SimPy, Pyomo ideas): `docs/strategic_vision.rst` in this repository.
 
-## Branching Strategy
+## Branching strategy
 
 This repository uses a simple branching model that fits a solo-developer phase and can be tightened later without changing the overall flow.
 
 ### Branch roles
 
-- `main`: stable, release-ready branch
-- `dev`: ongoing integration branch for daily development
-- `feature/*`: short-lived branches for features
+- `main`: stable, release-ready branch  
+- `dev`: ongoing integration branch for daily development  
+- `feature/*`: short-lived branches for features  
 - optional short-lived branch prefixes: `fix/*`, `docs/*`, `refactor/*`
 
 ### Practical rules
 
-1. Create new work branches from `dev`.
-2. Merge `feature/*` (and optional `fix/*`, `docs/*`, `refactor/*`) into `dev`.
-3. Merge `dev` into `main` when `dev` is stable and CI is green.
-4. Create release tags (`v*`) from `main` only.
-5. Direct pushes:
-   - allowed on `dev` (for now)
-   - avoided on `main` (use PR from `dev` to `main`)
+1. Create new work branches from `dev`.  
+2. Merge `feature/*` (and optional `fix/*`, `docs/*`, `refactor/*`) into `dev`.  
+3. Merge `dev` into `main` when `dev` is stable and CI is green.  
+4. Create release tags (`v*`) from `main` only.  
+5. Direct pushes: allowed on `dev` (for now); avoided on `main` (use PR from `dev` to `main`).
 
 ### GitHub branch protection (recommended)
 
-- `main`:
-  - require pull request before merge
-  - require status checks to pass
-  - approvals not required (for now)
-  - no force pushes, no branch deletion
-- `dev`:
-  - keep permissive for now (direct pushes allowed)
-  - optionally block force pushes and deletion
+- **`main`:** require pull request before merge; require status checks to pass; approvals not required (for now); no force pushes, no branch deletion.  
+- **`dev`:** keep permissive for now (direct pushes allowed); optionally block force pushes and deletion.
 
+## Roadmap and deeper design (optional)
+
+Near-term themes include **multi-FMU projects**, richer **stimulation/measurement** setup, **saving results**, and **plugin-style** extension points. Older “vision” bullets (code generation defaults, format evolution) remain directionally true; see Sphinx and in-repo docs for the current, concrete list.

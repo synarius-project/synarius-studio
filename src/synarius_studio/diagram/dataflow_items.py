@@ -1484,7 +1484,11 @@ class FmuBlockItem(_MovableSnapRectMixin, QGraphicsRectItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, enabled)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, enabled)
         self.setAcceptHoverEvents(enabled)
-        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if enabled else Qt.MouseButton.NoButton)
+        # Kenngrößen keep LeftButton in experiment mode so double-click opens the parameter editor.
+        if not enabled and self._el.type_key in STD_PARAM_LOOKUP:
+            self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        else:
+            self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if enabled else Qt.MouseButton.NoButton)
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # type: ignore[override]
         if self._el.type_key in STD_PARAM_LOOKUP:

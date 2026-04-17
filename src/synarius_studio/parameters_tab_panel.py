@@ -264,19 +264,32 @@ _TREE_QSS = with_tooltip_qss(
 # ---------------------------------------------------------------------------
 
 
-def open_parameter_viewer_for_record(record: ParameterRecord, parent: QWidget | None = None) -> None:
-    """Open the synariustools CalibrationMap viewer for *record*.
+def open_parameter_viewer_for_record(
+    record: ParameterRecord,
+    parent: QWidget | None = None,
+    *,
+    on_write_back: Callable[[Any, dict[int, Any]], None] | None = None,
+) -> None:
+    """Open the synariustools CalibrationMap viewer/editor for *record*.
 
     Falls back to a plain-text dialog when synariustools is not installed.
     This function is the single implementation shared by the parameter panel
     tree (double-click on a parameter row) and the canvas (double-click on a
     Kennwert / Kennlinie / Kennfeld block).
+
+    Parameters
+    ----------
+    on_write_back:
+        When provided, the dialog opens in **edit mode**.  Called on commit
+        with ``(values: np.ndarray, axes: dict[int, np.ndarray])``.
+        ``None`` → read-only view.
     """
     try:
         from synariustools.tools.calmapwidget import (  # type: ignore[import-untyped]
             CalibrationMapData,
             build_scalar_calibration_readonly_widget,
             create_calibration_map_viewer,
+            exec_scalar_calibration_edit_dialog,
             supports_calibration_plot,
             supports_calibration_scalar_edit,
         )
@@ -297,7 +310,15 @@ def open_parameter_viewer_for_record(record: ParameterRecord, parent: QWidget | 
         dlg.show()
         return
 
+    import numpy as np
     data = CalibrationMapData.from_parameter_record(record)
+
+    if on_write_back is not None and supports_calibration_scalar_edit(record):
+        # Modal scalar editor; returns new value or None on cancel.
+        new_val = exec_scalar_calibration_edit_dialog(parent, data)
+        if new_val is not None:
+            on_write_back(np.asarray(new_val, dtype=np.float64), {})
+        return
 
     dlg = QDialog(parent, Qt.WindowType.Window)
     dlg.setWindowTitle(f"{record.name}  [{record.category}]")
@@ -307,11 +328,25 @@ def open_parameter_viewer_for_record(record: ParameterRecord, parent: QWidget | 
     lay.setSpacing(0)
 
     if supports_calibration_scalar_edit(record):
+        # Read-only scalar view (on_write_back is None).
         w = build_scalar_calibration_readonly_widget(dlg, data)
         lay.addWidget(w)
         dlg.resize(320, 180)
     elif supports_calibration_plot(record):
-        shell = create_calibration_map_viewer(data, parent=dlg, embedded=True)
+        # Kennlinie / Kennfeld: editable when on_write_back is provided.
+        _wb = on_write_back
+
+        def _on_applied(widget: Any) -> None:
+            if _wb is not None:
+                values, axes = widget.applied_values_and_axes()
+                _wb(values, axes)
+
+        shell = create_calibration_map_viewer(
+            data,
+            parent=dlg,
+            embedded=True,
+            on_applied_to_model=_on_applied if on_write_back is not None else None,
+        )
         if hasattr(shell, "attach_dialog_close_guard"):
             shell.attach_dialog_close_guard(dlg)
         lay.addWidget(shell, 1)
@@ -341,10 +376,13 @@ class ParametersTabPanel(QWidget):
         controller: SynariusController,
         execute_fn: Callable[[str], str | None],
         parent: QWidget | None = None,
+        *,
+        on_param_written: Callable[[UUID], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._controller = controller
         self._execute = execute_fn
+        self._on_param_written = on_param_written
         self.setMinimumWidth(RESOURCES_PANEL_FIXED_WIDTH)
         self.setObjectName("syn_parameters_tab_panel")
         self.setStyleSheet(
@@ -610,11 +648,21 @@ class ParametersTabPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Parameter", f"Could not load parameter data:\n{exc}")
             return
-        self._open_parameter_viewer(record)
+        self._open_parameter_editor(pid, record)
 
-    def _open_parameter_viewer(self, record: ParameterRecord) -> None:
-        """Open the synariustools CalibrationMap viewer — exactly as ParaWiz does."""
-        open_parameter_viewer_for_record(record, self)
+    def _open_parameter_editor(self, pid: UUID, record: ParameterRecord) -> None:
+        rt = self._controller.model.parameter_runtime()
+        _notify = self._on_param_written
+
+        def _write_back(values: Any, axes: dict[int, Any]) -> None:
+            import numpy as np
+            rt.repo.set_value(pid, np.asarray(values, dtype=np.float64))
+            for axis_idx, ax_vals in axes.items():
+                rt.repo.set_axis_values(pid, axis_idx, np.asarray(ax_vals, dtype=np.float64))
+            if _notify is not None:
+                _notify(pid)
+
+        open_parameter_viewer_for_record(record, self, on_write_back=_write_back)
 
     # ── Toolbar action handlers ───────────────────────────────────────────
     def _on_load_clicked(self) -> None:
@@ -742,5 +790,7 @@ def build_parameters_tab_panel(
     controller: SynariusController,
     execute_fn: Callable[[str], str | None],
     parent: QWidget | None = None,
+    *,
+    on_param_written: Callable[[UUID], None] | None = None,
 ) -> ParametersTabPanel:
-    return ParametersTabPanel(controller, execute_fn, parent)
+    return ParametersTabPanel(controller, execute_fn, parent, on_param_written=on_param_written)

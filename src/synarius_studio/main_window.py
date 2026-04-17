@@ -5,7 +5,7 @@ import re
 import shlex
 import time
 from dataclasses import dataclass, field
-from typing import Callable, cast
+from typing import Any, Callable, cast
 from uuid import UUID
 import numpy as np
 from PySide6.QtCore import (
@@ -395,6 +395,12 @@ class _RunLoopWorker(QObject):
         self._apply_pacing_option()
         if self._timer is not None:
             self._timer.setInterval(self._effective_tick_interval_ms())
+
+    @Slot()
+    def request_parameter_reload(self) -> None:
+        """Signal the engine to refresh its parameter cache from the repository on the next step."""
+        if self._engine is not None:
+            self._engine.request_parameter_reload()
 
     @Slot()
     def start(self) -> None:
@@ -940,6 +946,7 @@ class MainWindow(QMainWindow):
             self._controller,
             lambda cmd: self._controller_execute_logged(cmd, source="parameters_panel"),
             self,
+            on_param_written=lambda _pid: self._request_engine_param_reload(),
         )
         self._resources_panel_widget = build_resources_panel(self._controller, self)
         left_tabs.addTab(self._resources_panel_widget, "Librarys")
@@ -2330,18 +2337,35 @@ class MainWindow(QMainWindow):
         h = shlex.quote(dv.hash_name)
         self._run_protocol_lines_as_console([f"set {h}.open_widget true"])
 
+    def _request_engine_param_reload(self) -> None:
+        """Thread-safe: tell the active engine to reload parameters from the repo on the next step."""
+        w = self._run_worker
+        if w is not None:
+            QMetaObject.invokeMethod(w, "request_parameter_reload", Qt.ConnectionType.QueuedConnection)
+        if self._run_engine is not None:
+            self._run_engine.request_parameter_reload()
+
     def _on_kenngroesse_canvas_open_editor(self, el: ElementaryInstance) -> None:
-        """Canvas double-click on Kennwert / Kennlinie / Kennfeld: open the parameter viewer."""
+        """Canvas double-click on Kennwert / Kennlinie / Kennfeld: open the parameter editor."""
         try:
             ref = str(el.get("parameter_ref"))
             rt = self._controller.model.parameter_runtime()
             cal_param_node = rt.resolve_cal_param_node(ref)
-            record = rt.repo.get_record(cal_param_node.id)
+            pid = cal_param_node.id
+            record = rt.repo.get_record(pid)
         except Exception as exc:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Parameter", f"Kein Parameter verknüpft:\n{exc}")
             return
-        open_parameter_viewer_for_record(record, self)
+
+        def _write_back(values: Any, axes: dict[int, Any]) -> None:
+            import numpy as np
+            rt.repo.set_value(pid, np.asarray(values, dtype=np.float64))
+            for axis_idx, ax_vals in axes.items():
+                rt.repo.set_axis_values(pid, axis_idx, np.asarray(ax_vals, dtype=np.float64))
+            self._request_engine_param_reload()
+
+        open_parameter_viewer_for_record(record, self, on_write_back=_write_back)
 
     def _close_live_dataviewers_for_sim_mode_exit(self) -> None:
         """Remember open live DataViewer dialogs and close them when leaving experiment mode."""
