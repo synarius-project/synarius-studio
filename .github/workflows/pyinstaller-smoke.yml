@@ -53,16 +53,24 @@ jobs:
           PYINSTALLER_VERSION: ${{ env.PYINSTALLER_VERSION }}
         run: |
           set -euo pipefail
+          STUDIO_ROOT="$(pwd)"
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          export PYINSTALLER_VERSION="${PYINSTALLER_VERSION:-6.19.0}"
           python -m pip install --upgrade pip setuptools wheel
-          PARENT="$(cd .. && pwd)"
-          pip install "${PARENT}/synarius-core[timeseries,fmu]"
-          pip install "${PARENT}/synarius-apps"
-          pip install . "pyinstaller==${PYINSTALLER_VERSION}"
-      - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
+          if [ ! -d "${PARENT}/synarius-core" ] || [ ! -d "${PARENT}/synarius-apps" ]; then
+            echo "::error::Expected synarius-core and synarius-apps next to studio root: ${PARENT}"
+            ls -la "${PARENT}" || true
+            exit 1
+          fi
+          ( cd "${PARENT}/synarius-core" && python -m pip install ".[timeseries,fmu]" )
+          ( cd "${PARENT}/synarius-apps" && python -m pip install . )
+          ( cd "${STUDIO_ROOT}" && python -m pip install . "pyinstaller==${PYINSTALLER_VERSION}" )
+      - run: python -m pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
         shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Build onedir bundle
         run: pyinstaller --noconfirm --clean synarius_studio_onedir.spec
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Smoke test onedir startup
         shell: powershell

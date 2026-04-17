@@ -112,25 +112,31 @@ jobs:
           PYINSTALLER_VERSION: ${{ env.PYINSTALLER_VERSION }}
         run: |
           set -euo pipefail
+          STUDIO_ROOT="$(pwd)"
+          PARENT="$(dirname "${STUDIO_ROOT}")"
+          export PYINSTALLER_VERSION="${PYINSTALLER_VERSION:-6.19.0}"
           python -m pip install --upgrade pip setuptools wheel
-          PARENT="$(cd .. && pwd)"
           if [ ! -d "${PARENT}/synarius-core" ] || [ ! -d "${PARENT}/synarius-apps" ]; then
             echo "::error::Expected synarius-core and synarius-apps next to studio root: ${PARENT}"
             ls -la "${PARENT}" || true
             exit 1
           fi
-          pip install "${PARENT}/synarius-core[timeseries,fmu]"
-          pip install "${PARENT}/synarius-apps"
-          pip install . "pyinstaller==${PYINSTALLER_VERSION}"
+          # Install from inside each repo so extras ``.[timeseries,fmu]`` are not parsed as a path/glob
+          # segment on Windows/Git-Bash (``…/synarius-core[timeseries,fmu]`` breaks pip).
+          ( cd "${PARENT}/synarius-core" && python -m pip install ".[timeseries,fmu]" )
+          ( cd "${PARENT}/synarius-apps" && python -m pip install . )
+          ( cd "${STUDIO_ROOT}" && python -m pip install . "pyinstaller==${PYINSTALLER_VERSION}" )
       # FMU runtime in packaged app requires fmpy at bundle time; ensure it is present in CI env.
-      - run: pip install fmpy
+      - run: python -m pip install fmpy
         shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       # Live DataViewer / recording viewer: same packages as monorepo ``synarius-apps`` (no core override).
-      - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
+      - run: python -m pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: PyInstaller (one-file, Qt plugins + package data)
         run: pyinstaller --noconfirm --clean synarius_studio.spec
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Smoke test bundled EXE startup
         shell: powershell
