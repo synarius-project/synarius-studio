@@ -16,27 +16,28 @@
 # Eingangsvariablen (Stimulusquellen)
 # ---------------------------------------------------------------------------
 
-new Variable x_kl1 -407.5 -152.5 1
-new Variable x_kl2 -407.5 -32.5 1
-new Variable x_kf1 -415 77.5 1
-new Variable y_kf1 -415 127.5 1
-new Variable x_kf2 -415 240 1
-new Variable y_kf2 -415 290 1
+# Eingänge x=22.5; y an Kennlinien-/Kennfeld-Pins ausrichten (Überlappung / schräge Default-Kabel vermeiden).
+new Variable x_kl1 22.5 -152.5 1
+new Variable x_kl2 22.5 -32.5 1
+new Variable x_kf1 22.5 72.5 1
+new Variable y_kf1 22.5 127.5 1
+new Variable x_kf2 22.5 242.5 1
+new Variable y_kf2 22.5 290 1
 
 # ---------------------------------------------------------------------------
 # Ausgangsvariablen (Messsonden)
 # ---------------------------------------------------------------------------
 
-new Variable out_kl1 -40 -152.5 1
-new Variable out_kl2 -40 -32.5 1
-new Variable out_kf1 -40 87.5 1
-new Variable out_kf2 -40 257.5 1
+new Variable out_kl1 390 -152.5 1
+new Variable out_kl2 390 -32.5 1
+new Variable out_kf1 390 87.5 1
+new Variable out_kf2 390 257.5 1
 
 # ---------------------------------------------------------------------------
-# Oszilloskop (DataViewer): alle vier Ausgaenge messen
+# Oszilloskop (DataViewer): alle vier Ausgaenge messen — unterhalb des Flusses, nicht über KF1/KF2.
 # ---------------------------------------------------------------------------
 
-new DataViewer 350 185
+new DataViewer 120 352.5
 set out_kl1.dataviewer_measure_ids [1]
 set out_kl2.dataviewer_measure_ids [1]
 set out_kf1.dataviewer_measure_ids [1]
@@ -73,10 +74,10 @@ set @main/parameters.active_dataset_name kenngroessen_poly3
 # und setzt parameter_ref automatisch)
 # ---------------------------------------------------------------------------
 
-new curve KL1 -172.5 -182.5 1
-new curve KL2 -172.5 -62.5 1
-new map KF1 -172.5 57.5 1
-new map KF2 -172.5 227.5 1
+new curve KL1 257.5 -182.5 1
+new curve KL2 257.5 -62.5 1
+new map KF1 257.5 57.5 1
+new map KF2 257.5 227.5 1
 
 # ---------------------------------------------------------------------------
 # Verbindungen: Stimuli -> Kenngroessen -> Ausgaenge

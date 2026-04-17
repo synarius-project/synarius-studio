@@ -101,6 +101,7 @@ from .theme import (
     STUDIO_TOOLBAR_FOREGROUND,
     qss_widget_id_background,
     studio_tab_bar_stylesheet,
+    studio_toolbar_dock_toggle_icon_only_qss,
     studio_toolbar_stylesheet,
     with_tooltip_qss,
 )
@@ -132,7 +133,7 @@ from .fmu_import_dialog import FmuImportDialog
 from .resource_paths import prepend_dev_synarius_apps_src
 from .simulation_step_count_field import SimulationStepCountField
 from .stimulation_dialog import StimulationDialog
-from .svg_icons import icon_from_inverted_standard_icon, icon_from_tinted_svg_file, qicon_panel_toggle_for_toolbar
+from .svg_icons import icon_from_inverted_standard_icon, icon_from_tinted_svg_file, qicon_dock_panel_toggle
 
 DEFAULT_OUTPUT_COLOR = "#ADD8E6"  # light blue
 DEFAULT_PROMPT_COLOR = "#90EE90"  # light green
@@ -664,26 +665,25 @@ class MainWindow(QMainWindow):
         self.undo_action.triggered.connect(lambda: self._execute_controller_line_for_ui("undo 1"))
         self.redo_action.triggered.connect(lambda: self._execute_controller_line_for_ui("redo 1"))
         self.exit_action = QAction("Exit Synarius", self)
+        self.toggle_left_panel_action = QAction("", self)
         self.toggle_right_panel_action = QAction("", self)
         self.toggle_bottom_panel_action = QAction("", self)
 
+        self.toggle_left_panel_action.setCheckable(True)
         self.toggle_right_panel_action.setCheckable(True)
         self.toggle_bottom_panel_action.setCheckable(True)
+        self.toggle_left_panel_action.setChecked(True)
         self.toggle_right_panel_action.setChecked(True)
         self.toggle_bottom_panel_action.setChecked(True)
-        _panel_toggle_fg = QColor(STUDIO_TOOLBAR_FOREGROUND)
-        self.toggle_right_panel_action.setIcon(
-            qicon_panel_toggle_for_toolbar(self._icons_dir / "toggle_right_panel.svg", checked_foreground=_panel_toggle_fg)
-        )
-        self.toggle_bottom_panel_action.setIcon(
-            qicon_panel_toggle_for_toolbar(self._icons_dir / "toggle_bottom_panel.svg", checked_foreground=_panel_toggle_fg)
-        )
-        self.toggle_right_panel_action.setToolTip("Toggle right panel")
-        self.toggle_bottom_panel_action.setToolTip("Toggle bottom panel")
+        self._sync_dock_panel_toggle_icons()
+        self.toggle_left_panel_action.setToolTip("Show or hide the left panel (Library, Elements, Parameters)")
+        self.toggle_right_panel_action.setToolTip("Show or hide the right panel (Measurements, Signals)")
+        self.toggle_bottom_panel_action.setToolTip("Show or hide the bottom panel (Console, logs, …)")
 
         self.open_action.triggered.connect(self._open_project)
         self.save_action.triggered.connect(self._save_project)
         self.exit_action.triggered.connect(self.close)
+        self.toggle_left_panel_action.toggled.connect(self._toggle_left_panel)
         self.toggle_right_panel_action.toggled.connect(self._toggle_right_panel)
         self.toggle_bottom_panel_action.toggled.connect(self._toggle_bottom_panel)
 
@@ -796,12 +796,27 @@ class MainWindow(QMainWindow):
                 px = int(getattr(self, "_diagram_palette_icon_px", 20))
                 act.setIcon(icon_from_tinted_svg_file(base / fn, fg, logical_side=px))
 
+    def _sync_dock_panel_toggle_icons(self) -> None:
+        """Open/close dock glyphs (tinted); checked state uses the *close* icon per side."""
+        fg = QColor(STUDIO_TOOLBAR_FOREGROUND)
+        d = self._icons_dir
+        self.toggle_left_panel_action.setIcon(
+            qicon_dock_panel_toggle(d / "dock_left_open.svg", d / "dock_left_close.svg", foreground=fg)
+        )
+        self.toggle_right_panel_action.setIcon(
+            qicon_dock_panel_toggle(d / "dock_right_open.svg", d / "dock_right_close.svg", foreground=fg)
+        )
+        self.toggle_bottom_panel_action.setIcon(
+            qicon_dock_panel_toggle(d / "dock_bottom_open.svg", d / "dock_bottom_close.svg", foreground=fg)
+        )
+
     def _sync_all_tinted_toolbar_icons(self) -> None:
         self._sync_breeze_file_action_icons()
         self._sync_diagram_palette_action_icons()
+        self._sync_dock_panel_toggle_icons()
 
     def _apply_unified_toolbar_chrome(self) -> None:
-        qss = studio_toolbar_stylesheet()
+        qss = studio_toolbar_stylesheet() + studio_toolbar_dock_toggle_icon_only_qss()
         for tb in (getattr(self, "_main_toolbar", None), getattr(self, "_diagram_palette_toolbar", None)):
             if tb is None:
                 continue
@@ -885,10 +900,12 @@ class MainWindow(QMainWindow):
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+        toolbar.addAction(self.toggle_left_panel_action)
         toolbar.addAction(self.toggle_right_panel_action)
         toolbar.addAction(self.toggle_bottom_panel_action)
 
         self.addToolBar(toolbar)
+        self._wire_studio_dock_toggle_toolbuttons(toolbar)
         self._apply_unified_toolbar_chrome()
         self._sync_diagram_palette_action_icons()
 
@@ -956,6 +973,7 @@ class MainWindow(QMainWindow):
         MainWindow._tab_bar_compact_only_needed(left_tabs)
         _resource_tab_strip_w = max(left_tabs.tabBar().sizeHint().width(), 28)
         _left_resources_w = RESOURCES_PANEL_MIN_WIDTH + _resource_tab_strip_w
+        self._left_panel_split_width = _left_resources_w
         left_tabs.setMinimumWidth(_left_resources_w)
         left_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
@@ -2822,6 +2840,10 @@ class MainWindow(QMainWindow):
         if self._console_command_needs_diagram_rebuild(command_line):
             self._refresh_diagram()
             self._flush_compile_diagnostics_to_build_log()
+            first_tok = command_line.strip().split(None, 1)[0].lower() if command_line.strip() else ""
+            if first_tok == "load":
+                # After layout/scrollbar policy settle, align diagram to the canvas top-left (not centred).
+                QTimer.singleShot(0, self._dataflow_view.scroll_diagram_content_to_top_left)
         elif command_line.strip().lower().startswith("set "):
             self._refresh_variable_value_labels()
         # Keep open DataViewer dialogs in sync with changed measure bindings immediately.
@@ -3701,6 +3723,29 @@ class MainWindow(QMainWindow):
             pass
         else:
             self.statusBar().showMessage("Save canceled")
+
+    def _wire_studio_dock_toggle_toolbuttons(self, toolbar: QToolBar) -> None:
+        """Let toolbar QSS target dock toggles by id (icon-only checked state, no violet fill)."""
+        pairs = (
+            (self.toggle_left_panel_action, "studio_dock_toggle_left"),
+            (self.toggle_right_panel_action, "studio_dock_toggle_right"),
+            (self.toggle_bottom_panel_action, "studio_dock_toggle_bottom"),
+        )
+        for act, name in pairs:
+            w = toolbar.widgetForAction(act)
+            if isinstance(w, QToolButton):
+                w.setObjectName(name)
+
+    def _toggle_left_panel(self, visible: bool) -> None:
+        self._left_tabs.setVisible(visible)
+        w0, w1, w2 = self.horizontal_split.sizes()
+        if visible:
+            lw = self._left_panel_split_width
+            self.horizontal_split.setSizes([lw, 712 if w2 > 0 else 932, w2])
+        else:
+            if w0 > 0:
+                self._left_panel_split_width = w0
+            self.horizontal_split.setSizes([0, w1 + w0, w2])
 
     def _toggle_right_panel(self, visible: bool) -> None:
         self.right_tabs.setVisible(visible)

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 # Default scene bounds (pre-scale units × UI_SCALE). Node positions come from the loaded model (``x``/``y`` on instances).
 SCENE_RECT = QRectF(0.0, 0.0, 900.0 * UI_SCALE, 520.0 * UI_SCALE)
+SCENE_RECT_PADDING = 120.0
 
 
 def default_sample_syn_path() -> Path:
@@ -141,4 +142,15 @@ def populate_scene_from_model(
 
     refresh_all_connector_crossing_strokes(scene)
 
-    scene.setSceneRect(SCENE_RECT)
+    # Keep the default work area but always include actual item extents (also for negative coordinates).
+    bounds = scene.itemsBoundingRect()
+    if bounds.isValid() and not bounds.isEmpty():
+        bounds = bounds.adjusted(
+            -SCENE_RECT_PADDING,
+            -SCENE_RECT_PADDING,
+            SCENE_RECT_PADDING,
+            SCENE_RECT_PADDING,
+        )
+        scene.setSceneRect(SCENE_RECT.united(bounds))
+    else:
+        scene.setSceneRect(SCENE_RECT)

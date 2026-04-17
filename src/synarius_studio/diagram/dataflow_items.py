@@ -2338,3 +2338,7 @@ def refresh_all_connector_crossing_strokes(scene: QGraphicsScene | None) -> None
     for it in scene.items():
         if isinstance(it, ConnectorEdgeItem):
             it._rebuild_stroke()
+
+
+# Older diagram code imported ``ElementaryBlockItem``; the concrete item type is ``FmuBlockItem``.
+ElementaryBlockItem = FmuBlockItem

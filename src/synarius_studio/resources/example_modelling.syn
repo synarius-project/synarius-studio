@@ -5,6 +5,12 @@
 #
 # All node positions are model coordinates (x, y, size) on ``new Variable`` / ``new BasicOperator``.
 # x and y are multiples of 7.5 so scene positions align with the studio half-module grid (MODULE/2).
+#
+# Connector drawing: if two pins are almost on the same row but not exactly (small vertical gap in
+# scene space), the default route is a single straight segment (looks “slanted”). Prefer either
+# aligned rows (same effective pin y), a clearly larger vertical separation, or explicit
+# ``orthogonal_bends=…`` on ``new Connector`` (absolute scene coordinates; see core
+# ``synarius_core.model.connector_routing._COLLINEAR_DY``).
 
 # --- Inputs (external sources, like the leftmost variable blocks in the diagram) ---
 new Variable vtx_a 22.5 30 1

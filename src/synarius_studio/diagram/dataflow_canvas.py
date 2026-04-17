@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, Signal
+import json
+from pathlib import Path
+import time as _time
+
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -17,6 +21,7 @@ from PySide6.QtGui import (
     QPalette,
     QResizeEvent,
     QShowEvent,
+    QTransform,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QMessageBox
@@ -45,6 +50,7 @@ from .placement_interactive import (
 CANVAS_BACKGROUND_COLOR = "#f0f3f5" #"#fffef2"
 # Simulation canvas background — #ecffec (light green), QColor(236, 255, 236).
 CANVAS_SIMULATION_BACKGROUND_COLOR = "#ecffec"
+_DEBUG_LOG_PATH = Path(__file__).resolve().parents[4] / "debug-2707a1.log"
 
 # Shared with console so diagram and terminal use identical scrollbar chrome (Qt style sheet).
 SCROLLBAR_STYLE_QSS = """
@@ -95,14 +101,41 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
 """
 
 
+def _append_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    """Append one NDJSON debug record for session ``2707a1``."""
+    try:
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as _df:
+            _df.write(
+                json.dumps(
+                    {
+                        "sessionId": "2707a1",
+                        "runId": "repro-next",
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except OSError:
+        return
+
+
 class DataflowGraphicsView(QGraphicsView):
     """
     Renders a ``QGraphicsScene`` with:
-    - **Wheel**: zoom (anchor under mouse).
+    - **Wheel**: zoom anchored to cursor. When scrollbars have no range (scene fits viewport),
+      ``AnchorUnderMouse`` cannot adjust position via scroll offsets; zoom uses
+      ``transform() * (translate(p) * scale * translate(-p))`` in scene space instead.
+      Otherwise ``AnchorUnderMouse`` + ``scale()`` with scrollbar ``valueChanged`` disconnected
+      during ``scale()`` so the policy sync cannot resize the viewport mid-anchor.
     - **Ctrl + wheel**: horizontal scroll.
     - **Shift + wheel**: vertical scroll.
-    - **Scroll bars**: ``ScrollBarAsNeeded`` while scene (0, 0) is visible; both bars switch
-      to ``ScrollBarAlwaysOn`` once the origin leaves the viewport so the user can pan back.
+    - **Scroll bars**: ``ScrollBarAsNeeded`` while all diagram items are fully visible in the
+      viewport; once any item is clipped, both bars switch to ``ScrollBarAlwaysOn`` so panning
+      remains immediately available.
     - **Left-drag on empty background**: rubber-band rectangle to select multiple items (replace selection).
     - **Ctrl + left-drag on empty background**: pan the canvas (Qt’s Ctrl+rubber-band “add to selection” is not used).
     - **Ctrl** (over empty canvas): open-hand cursor hint; while panning, closed hand.
@@ -136,8 +169,13 @@ class DataflowGraphicsView(QGraphicsView):
         )
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setRubberBandSelectionMode(Qt.ItemSelectionMode.IntersectsItemShape)
+        # Flush diagram content to the top-left when the scene is smaller than the viewport; pair
+        # with :meth:`scroll_diagram_content_to_top_left` after ``load`` so opened projects are not
+        # centred in the canvas (``QGraphicsView`` default ``AlignCenter``).
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        # Avoid re-centering the scene on viewport resize (``AnchorViewCenter`` fights top-left).
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setBackgroundBrush(QColor(CANVAS_BACKGROUND_COLOR))
@@ -179,15 +217,47 @@ class DataflowGraphicsView(QGraphicsView):
         self.horizontalScrollBar().valueChanged.connect(self._sync_scrollbar_policy_for_scene_origin)
         self.verticalScrollBar().valueChanged.connect(self._sync_scrollbar_policy_for_scene_origin)
 
-    def _scene_origin_visible_in_viewport(self) -> bool:
-        """True iff scene point (0, 0) lies inside the current viewport rectangle."""
-        pt = self.mapFromScene(QPointF(0.0, 0.0))
-        return self.viewport().rect().contains(pt)
+    def _scene_content_fully_visible_in_viewport(self) -> bool:
+        """True iff the current item bounding box is fully inside the visible scene rect."""
+        sc = self.scene()
+        if sc is None:
+            return True
+        content = sc.itemsBoundingRect()
+        if content.isEmpty() or not content.isValid():
+            return True
+        visible = self.mapToScene(self.viewport().rect()).boundingRect()
+        eps = 0.5
+        return visible.contains(content.adjusted(-eps, -eps, eps, eps))
+
+    def _ensure_scene_rect_covers_items(self) -> None:
+        """Expand scene rect to include current item bounds (important for negative coordinates)."""
+        sc = self.scene()
+        if sc is None:
+            return
+        bounds = sc.itemsBoundingRect()
+        if bounds.isEmpty() or not bounds.isValid():
+            return
+        pad = 120.0
+        target = bounds.adjusted(-pad, -pad, pad, pad)
+        if not sc.sceneRect().contains(target):
+            sc.setSceneRect(sc.sceneRect().united(QRectF(target)))
+
+    def _ensure_scene_rect_covers_rect(self, rect: QRectF) -> None:
+        """Expand scene rect to include an arbitrary view-space target rect."""
+        sc = self.scene()
+        if sc is None:
+            return
+        if rect.isEmpty() or not rect.isValid():
+            return
+        pad = 120.0
+        target = rect.adjusted(-pad, -pad, pad, pad)
+        if not sc.sceneRect().contains(target):
+            sc.setSceneRect(sc.sceneRect().united(QRectF(target)))
 
     def _sync_scrollbar_policy_for_scene_origin(self) -> None:
         """
-        While (0, 0) is visible, keep Qt's as-needed scroll bars. Once the user pans/zooms
-        so the origin is off-screen, force both bars on so ranges stay usable.
+        Keep as-needed scrollbars while all scene items are fully visible. Once any
+        item is clipped by the viewport, force both bars on so panning is available.
         """
         if self._syncing_scrollbar_policy:
             return
@@ -195,19 +265,20 @@ class DataflowGraphicsView(QGraphicsView):
         hsb = self.horizontalScrollBar()
         vsb = self.verticalScrollBar()
         try:
+            self._ensure_scene_rect_covers_items()
             hsb.blockSignals(True)
             vsb.blockSignals(True)
             # Showing scroll bars changes the viewport; iterate until policies match visibility.
             for _ in range(4):
-                origin_ok = self._scene_origin_visible_in_viewport()
+                content_ok = self._scene_content_fully_visible_in_viewport()
                 h_target = (
                     Qt.ScrollBarPolicy.ScrollBarAsNeeded
-                    if origin_ok
+                    if content_ok
                     else Qt.ScrollBarPolicy.ScrollBarAlwaysOn
                 )
                 v_target = (
                     Qt.ScrollBarPolicy.ScrollBarAsNeeded
-                    if origin_ok
+                    if content_ok
                     else Qt.ScrollBarPolicy.ScrollBarAlwaysOn
                 )
                 if (
@@ -222,13 +293,66 @@ class DataflowGraphicsView(QGraphicsView):
             vsb.blockSignals(False)
             self._syncing_scrollbar_policy = False
 
+    def scroll_diagram_content_to_top_left(self, *, margin_vp: int = 4) -> None:
+        """
+        Place the tight bounding box of diagram items flush to the top-left of the viewport.
+
+        Used after ``load`` so the opened project is not presented centred. Does not change zoom;
+        adjusts scroll bars so ``itemsBoundingRect().topLeft()`` maps near ``(margin_vp, margin_vp)``.
+        """
+        sc = self.scene()
+        if sc is None:
+            return
+        self._sync_scrollbar_policy_for_scene_origin()
+        bounds = sc.itemsBoundingRect()
+        if not bounds.isValid() or bounds.isEmpty():
+            return
+        tl = bounds.topLeft()
+        vp_tl = self.mapFromScene(tl)
+        margin = QPoint(int(margin_vp), int(margin_vp))
+        delta = vp_tl - margin
+        if delta.x() == 0 and delta.y() == 0:
+            return
+        hsb = self.horizontalScrollBar()
+        vsb = self.verticalScrollBar()
+        hsb.setValue(hsb.value() + delta.x())
+        vsb.setValue(vsb.value() + delta.y())
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._sync_scrollbar_policy_for_scene_origin()
+        # region agent log
+        c = self.viewport().rect().center()
+        p = self.mapToScene(c)
+        _append_debug_log(
+            "H6",
+            "dataflow_canvas.py:resizeEvent",
+            "view resize baseline",
+            {
+                "viewport_center": [c.x(), c.y()],
+                "scene_at_viewport_center": [p.x(), p.y()],
+                "alignment": str(self.alignment()),
+            },
+        )
+        # endregion
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._sync_scrollbar_policy_for_scene_origin()
+        # region agent log
+        c = self.viewport().rect().center()
+        p = self.mapToScene(c)
+        _append_debug_log(
+            "H6",
+            "dataflow_canvas.py:showEvent",
+            "view show baseline",
+            {
+                "viewport_center": [c.x(), c.y()],
+                "scene_at_viewport_center": [p.x(), p.y()],
+                "alignment": str(self.alignment()),
+            },
+        )
+        # endregion
 
     def set_viewport_canvas_color(self, hex_color: str) -> None:
         """Match scene and parent chrome: QGraphicsView draws this behind / around the scene."""
@@ -324,6 +448,18 @@ class DataflowGraphicsView(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             self._cancel_deferred_scene_left_release()
             self._pending_selection_change = None
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # Middle-button drag pans the canvas independent of item hits/modifiers.
+            self._cancel_deferred_scene_left_release()
+            self._pending_selection_change = None
+            self._move_anchor_snapshot = None
+            self._pan_active = True
+            self._pan_viewport_pos = pos
+            self._pan_h_scroll = self.horizontalScrollBar().value()
+            self._pan_v_scroll = self.verticalScrollBar().value()
+            self.viewport().setCursor(self._closed_hand)
+            event.accept()
+            return
         if self._interaction_locked:
             dv = self._dataviewer_block_under(self, pos)
             if event.button() == Qt.MouseButton.LeftButton and dv is not None:
@@ -409,9 +545,19 @@ class DataflowGraphicsView(QGraphicsView):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._pan_active and self._pan_viewport_pos is not None:
             pos = event.position().toPoint()
-            delta = pos - self._pan_viewport_pos
-            self.horizontalScrollBar().setValue(self._pan_h_scroll - delta.x())
-            self.verticalScrollBar().setValue(self._pan_v_scroll - delta.y())
+            prev_pos = self._pan_viewport_pos
+            prev_scene = self.mapToScene(prev_pos)
+            now_scene = self.mapToScene(pos)
+            ds = now_scene - prev_scene
+            if abs(ds.x()) > 1e-9 or abs(ds.y()) > 1e-9:
+                # Allow panning even when scrollbars currently have zero range.
+                visible = self.mapToScene(self.viewport().rect()).boundingRect()
+                self._ensure_scene_rect_covers_items()
+                self._ensure_scene_rect_covers_rect(visible.translated(-ds.x(), -ds.y()))
+                vc = self.viewport().rect().center()
+                center_scene = self.mapToScene(vc)
+                self.centerOn(center_scene.x() - ds.x(), center_scene.y() - ds.y())
+            self._pan_viewport_pos = pos
             event.accept()
             return
         if self._interaction_locked:
@@ -458,7 +604,7 @@ class DataflowGraphicsView(QGraphicsView):
         self.scene_left_release.emit()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._pan_active:
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton) and self._pan_active:
             self._pending_selection_change = None
             self._pan_active = False
             self._pan_viewport_pos = None
@@ -609,40 +755,67 @@ class DataflowGraphicsView(QGraphicsView):
         self.zoom_percent_changed.emit(self.zoom_percent())
         self._sync_scrollbar_policy_for_scene_origin()
 
+
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         mods = event.modifiers()
 
+        # --- 1. Scrolling (wie gehabt) ---
         if mods & Qt.KeyboardModifier.ControlModifier:
             hsb = self.horizontalScrollBar()
             hsb.setValue(hsb.value() - delta)
-            event.accept()
             self._sync_scrollbar_policy_for_scene_origin()
+            event.accept()
             return
         if mods & Qt.KeyboardModifier.ShiftModifier:
             vsb = self.verticalScrollBar()
             vsb.setValue(vsb.value() - delta)
-            event.accept()
             self._sync_scrollbar_policy_for_scene_origin()
+            event.accept()
             return
 
-        # Zoom anchored to mouse cursor position.
-        factor = 1.15 ** (delta / 240.0)
-        event.accept()
-        if factor == 1.0:
+        # --- 2. Zoom Logik ---
+        zoom_factor = 1.15 ** (delta / 240.0)
+        if abs(zoom_factor - 1.0) < 1e-9:
             return
-        mouse_vp = event.position().toPoint()
-        scene_anchor = self.mapToScene(mouse_vp)
-        # NoAnchor: Qt leaves scrollbars untouched during scale; we position manually below.
+
+        # A) Fixpunkt vor dem Zoom sichern
+        viewport_pos = event.position()
+        scene_pos = self.mapToScene(viewport_pos.toPoint())
+
+        # B) Anker deaktivieren, um Autozentrierung zu minimieren
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
-        self.scale(factor, factor)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        # Sync scrollbar policy first (may change viewport geometry), then anchor.
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+
+        # C) Die Skalierung direkt auf die Matrix anwenden
+        # Wir nutzen die mathematische Verschiebung zum Punkt, Skalierung, Rückverschiebung
+        old_transform = self.transform()
+        new_transform = old_transform.translate(scene_pos.x(), scene_pos.y())
+        new_transform.scale(zoom_factor, zoom_factor)
+        new_transform.translate(-scene_pos.x(), -scene_pos.y())
+        
+        self.setTransform(new_transform)
+
+        # D) Scrollbar-Policy Sync
         self._sync_scrollbar_policy_for_scene_origin()
-        drift = self.mapFromScene(scene_anchor) - mouse_vp
-        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + drift.x())
-        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + drift.y())
+
+        # E) Korrektur für den Fall "Keine Scrollbars" oder "Viewport-Resize"
+        # Wir schauen, wo scene_pos nach setTransform gelandet ist
+        current_pos_in_view = self.mapFromScene(scene_pos)
+        delta_pixel = current_pos_in_view - viewport_pos.toPoint()
+
+        # Wenn ein Delta existiert (weil Qt zentriert hat oder keine Scrollbars da sind),
+        # korrigieren wir das über die interne Verschiebung der Matrix.
+        if not delta_pixel.isNull():
+            # Wir korrigieren die Matrix direkt um den Pixel-Versatz, 
+            # um die "Zentrierung" von Qt zu übersteuern.
+            inv_transform, _ = self.transform().inverted()
+            delta_scene = inv_transform.map(QPointF(delta_pixel)) - inv_transform.map(QPointF(0, 0))
+            self.setTransform(self.transform().translate(-delta_scene.x(), -delta_scene.y()))
+
         self.zoom_percent_changed.emit(self.zoom_percent())
+        event.accept()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if self._interaction_locked:

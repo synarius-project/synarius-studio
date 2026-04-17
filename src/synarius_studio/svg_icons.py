@@ -141,6 +141,30 @@ def qicon_panel_toggle_for_toolbar(
     return icon
 
 
+def qicon_dock_panel_toggle(
+    open_path: Path,
+    close_path: Path,
+    *,
+    foreground: QColor,
+    logical_side: int = 24,
+) -> QIcon:
+    """Dock visibility: **Off** = ``open_path`` (panel hidden), **On** = ``close_path`` (panel visible).
+
+    Icons are tinted like other toolbar symbolics; checked state is shown by the glyph swap, not a
+    separate background color (see ``studio_toolbar_dock_toggle_icon_only_qss``).
+    """
+    icon_open = icon_from_tinted_svg_file(open_path, foreground, logical_side=logical_side)
+    icon_close = icon_from_tinted_svg_file(close_path, foreground, logical_side=logical_side)
+    pm_o = icon_open.pixmap(logical_side, logical_side, QIcon.Mode.Normal, QIcon.State.Off)
+    pm_c = icon_close.pixmap(logical_side, logical_side, QIcon.Mode.Normal, QIcon.State.Off)
+    if pm_o.isNull() or pm_c.isNull():
+        return icon_open
+    icon = QIcon()
+    icon.addPixmap(pm_o, QIcon.Mode.Normal, QIcon.State.Off)
+    icon.addPixmap(pm_c, QIcon.Mode.Normal, QIcon.State.On)
+    return icon
+
+
 def icon_from_tinted_panel_toggle_svg(
     svg_path: Path,
     *,

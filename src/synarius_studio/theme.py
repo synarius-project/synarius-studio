@@ -156,6 +156,27 @@ def studio_toolbar_stylesheet(*, background_color: str | None = None) -> str:
     )
 
 
+def studio_toolbar_dock_toggle_icon_only_qss() -> str:
+    """Panel dock toggles: no violet fill when checked — state is conveyed by open/close icons only."""
+    bg = STUDIO_TOOLBAR_BACKGROUND
+    th = STUDIO_TOOLBAR_ACTION_HOVER
+    tp = STUDIO_TOOLBAR_ACTION_PRESSED
+    return (
+        "QToolBar QToolButton#studio_dock_toggle_left:checked,"
+        "QToolBar QToolButton#studio_dock_toggle_right:checked,"
+        "QToolBar QToolButton#studio_dock_toggle_bottom:checked "
+        f"{{ background-color: {bg}; }}"
+        "QToolBar QToolButton#studio_dock_toggle_left:checked:hover,"
+        "QToolBar QToolButton#studio_dock_toggle_right:checked:hover,"
+        "QToolBar QToolButton#studio_dock_toggle_bottom:checked:hover "
+        f"{{ background-color: {th}; }}"
+        "QToolBar QToolButton#studio_dock_toggle_left:checked:pressed,"
+        "QToolBar QToolButton#studio_dock_toggle_right:checked:pressed,"
+        "QToolBar QToolButton#studio_dock_toggle_bottom:checked:pressed "
+        f"{{ background-color: {tp}; }}"
+    )
+
+
 def apply_dark_palette(app: QApplication) -> None:
     """Force a dark QPalette on *app* regardless of the OS color scheme.
 

@@ -2,6 +2,9 @@
 # Includes stimulation setup, measurement bindings, and simulation mode enabled.
 
 # --- Base model ---
+# Diagram routing: avoid a tiny non-zero vertical gap between pins on a long horizontal run
+# (otherwise the default connector is one straight “slanted” segment); align y or separate more,
+# or set ``orthogonal_bends=…`` on ``new Connector``. See ``example_modelling.syn`` header comment.
 new Variable vtx_a 22.5 30 1
 new Variable vtx_b 22.5 97.5 1
 new Variable vtx_c 22.5 135 1
