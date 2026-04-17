@@ -18,9 +18,9 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="12.65625"
-     inkscape:cx="7.5851852"
-     inkscape:cy="13.155556"
+     inkscape:zoom="6.328125"
+     inkscape:cx="0.63209877"
+     inkscape:cy="7.5061728"
      inkscape:window-width="1920"
      inkscape:window-height="1009"
      inkscape:window-x="-8"
@@ -39,17 +39,20 @@
   </defs>
   <rect
      style="fill:none;stroke:#232629;stroke-width:2;stroke-dasharray:none;stroke-dashoffset:5.11166"
-     id="rect1"
+     id="rect1-5"
      width="22.935486"
      height="23.544035"
-     x="4.4246917"
-     y="4.1102867" />
+     x="-27.436749"
+     y="4.0247021"
+     ry="3.3185184"
+     transform="scale(-1,1)" />
   <rect
-     style="fill:#232629;fill-opacity:0.5;stroke:none;stroke-width:1;stroke-dasharray:none;stroke-dashoffset:5.11166"
-     id="rect2"
-     width="6.5580249"
-     height="23.308641"
-     x="20.701235"
-     y="-27.654325"
-     transform="rotate(90)" />
+     style="fill:#232629;fill-opacity:0.5;stroke:none;stroke-width:0.999991;stroke-dasharray:none;stroke-dashoffset:5.11166"
+     id="rect2-6"
+     width="7.1725969"
+     height="18.246435"
+     x="17.85898"
+     y="7.0058661"
+     ry="1.4587677"
+     transform="matrix(0,1,1,0,0,0)" />
 </svg>
