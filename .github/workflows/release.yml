@@ -103,10 +103,28 @@ jobs:
             throw "Tag must match vX.Y.Z. Got: $tag"
           }
           "__version__ = `"$version`"" | Out-File -Encoding utf8 src/synarius_studio/_version.py
-      - run: pip install . "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+      # Bash (not PowerShell): reliable resolution of ``file:../…`` path deps on Windows runners.
+      # Pre-install siblings so pip does not mis-resolve monorepo-relative PEP 508 paths.
+      - name: Install Studio and PyInstaller
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
+        env:
+          PYINSTALLER_VERSION: ${{ env.PYINSTALLER_VERSION }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+          PARENT="$(cd .. && pwd)"
+          if [ ! -d "${PARENT}/synarius-core" ] || [ ! -d "${PARENT}/synarius-apps" ]; then
+            echo "::error::Expected synarius-core and synarius-apps next to studio root: ${PARENT}"
+            ls -la "${PARENT}" || true
+            exit 1
+          fi
+          pip install "${PARENT}/synarius-core[timeseries,fmu]"
+          pip install "${PARENT}/synarius-apps"
+          pip install . "pyinstaller==${PYINSTALLER_VERSION}"
       # FMU runtime in packaged app requires fmpy at bundle time; ensure it is present in CI env.
       - run: pip install fmpy
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       # Live DataViewer / recording viewer: same packages as monorepo ``synarius-apps`` (no core override).
       - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps

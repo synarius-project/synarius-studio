@@ -6,6 +6,7 @@ on:
 
 env:
   PYINSTALLER_VERSION: "6.19.0"
+  SYNARIUS_SIBLING_BRANCH: dev
 
 jobs:
   windows-onedir-smoke:
@@ -37,17 +38,28 @@ jobs:
           fi
           PARENT="$(dirname "${STUDIO_ROOT}")"
           cd "${PARENT}"
-          git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
-          git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
+          git clone --depth 1 -b "${SYNARIUS_SIBLING_BRANCH}" https://github.com/synarius-project/synarius-apps.git synarius-apps
+          git clone --depth 1 -b "${SYNARIUS_SIBLING_BRANCH}" https://github.com/synarius-project/synarius-core.git synarius-core
           # #region agent log
           echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H4\",\"message\":\"pyinstaller resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\"}}"
           # #endregion
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install . "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+      - name: Install Studio and PyInstaller
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
+        env:
+          PYINSTALLER_VERSION: ${{ env.PYINSTALLER_VERSION }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+          PARENT="$(cd .. && pwd)"
+          pip install "${PARENT}/synarius-core[timeseries,fmu]"
+          pip install "${PARENT}/synarius-apps"
+          pip install . "pyinstaller==${PYINSTALLER_VERSION}"
       - run: pip install "git+https://github.com/synarius-project/synarius-apps.git" --no-deps
+        shell: bash
         working-directory: ${{ steps.resolve.outputs.studio_root }}
       - name: Build onedir bundle
         run: pyinstaller --noconfirm --clean synarius_studio_onedir.spec
