@@ -24,7 +24,7 @@ from PySide6.QtGui import (
     QTransform,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QMessageBox
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QMessageBox
 
 from synarius_core.controller import SynariusController
 from synarius_core.dataflow_sim._std_type_keys import STD_PARAM_LOOKUP
@@ -407,11 +407,13 @@ class DataflowGraphicsView(QGraphicsView):
 
     @staticmethod
     def _dataviewer_block_under(view: QGraphicsView, pos: QPoint) -> DataViewerBlockItem | None:
-        it = view.itemAt(pos)
-        while it is not None:
-            if isinstance(it, DataViewerBlockItem):
-                return it
-            it = it.parentItem()
+        """Resolve a DataViewer block at ``pos``, even if another item (e.g. a wire) is painted above it."""
+        for top in view.items(pos):
+            it: QGraphicsItem | None = top
+            while it is not None:
+                if isinstance(it, DataViewerBlockItem):
+                    return it
+                it = it.parentItem()
         return None
 
     def _cancel_deferred_scene_left_release(self) -> None:
@@ -676,6 +678,14 @@ class DataflowGraphicsView(QGraphicsView):
             if event.button() == Qt.MouseButton.LeftButton:
                 dv = self._dataviewer_block_under(self, pos)
                 if dv is not None:
+                    # Do not rely on super() delivery: a connector or other item may be above the
+                    # DataViewer at this viewport position, so the block would never see the double-click.
+                    sc = self.scene()
+                    if isinstance(sc, SynariusDiagramScene):
+                        sc.open_dataviewer_requested.emit(dv.dataviewer())
+                        sc.suppress_next_left_release_selection_sync()
+                        event.accept()
+                        return
                     super().mouseDoubleClickEvent(event)
                     return
                 top = self.itemAt(pos)

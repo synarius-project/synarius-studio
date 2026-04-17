@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -143,6 +144,35 @@ ERROR_COLOR = "#FF6666"
 _CMD_LOG = logging.getLogger("synarius_studio.console")
 _EXP_LOG = logging.getLogger("synarius_studio.experiment")
 _MW_LOG = logging.getLogger("synarius_studio.main_window")
+
+
+def _agent_debug_log_dv(payload: dict) -> None:
+    # region agent log
+    try:
+        line = (
+            json.dumps(
+                {**payload, "sessionId": "5b73b8", "timestamp": int(time.time() * 1000)},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        here = Path(__file__).resolve()
+        candidates: list[Path] = []
+        if len(here.parents) > 3:
+            candidates.append(here.parents[3] / "debug-5b73b8.log")
+        candidates.append(Path.cwd() / "debug-5b73b8.log")
+        for path in candidates:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(line)
+                return
+            except OSError:
+                continue
+    except Exception:
+        pass
+    # endregion agent log
+
 
 def _studio_library_catalog() -> LibraryCatalog:
     """Defer heavy library scan when supported; tolerate older synarius-core without ``defer_initial_load``."""
@@ -2420,24 +2450,104 @@ class MainWindow(QMainWindow):
 
     def _flush_dataviewer_open_widget_from_model(self) -> None:
         """If core marked ``open_widget`` true, open/focus the dialog and clear the flag (no extra CCP line)."""
-        for dv in self._controller.model.iter_dataviewers():
+        # region agent log
+        _agent_debug_log_dv(
+            {
+                "hypothesisId": "H1",
+                "location": "main_window.py:_flush_dataviewer_open_widget_from_model",
+                "message": "flush_enter",
+                "data": {},
+            }
+        )
+        # endregion agent log
+        # Include every DataViewer (also under ``trash``): ``iter_dataviewers()`` omits trash, but CCP ``set`` still
+        # updates ``open_widget`` on those instances — we must flush them too.
+        for obj in self._controller.model.iter_objects():
+            if not isinstance(obj, DataViewer):
+                continue
+            dv = obj
             try:
                 if "open_widget" not in dv.attribute_dict:
                     continue
-                if not bool(dv.get("open_widget")):
+                ow_raw = dv.get("open_widget")
+                if not bool(ow_raw):
                     continue
+                # region agent log
+                _agent_debug_log_dv(
+                    {
+                        "hypothesisId": "H2-H3",
+                        "location": "main_window.py:_flush_dataviewer_open_widget_from_model",
+                        "message": "flush_will_open",
+                        "data": {
+                            "hn": getattr(dv, "hash_name", ""),
+                            "ow_repr": repr(ow_raw),
+                        },
+                    }
+                )
+                # endregion agent log
                 self._open_live_dataviewer_dialog(dv)
                 dv.set("open_widget", False)
-            except Exception:
+                # region agent log
+                _agent_debug_log_dv(
+                    {
+                        "hypothesisId": "H3",
+                        "location": "main_window.py:_flush_dataviewer_open_widget_from_model",
+                        "message": "flush_cleared_flag",
+                        "data": {"hn": getattr(dv, "hash_name", "")},
+                    }
+                )
+                # endregion agent log
+            except Exception as exc:
+                _EXP_LOG.exception("DataViewer open_widget flush failed for %s", getattr(dv, "hash_name", dv))
+                # region agent log
+                _agent_debug_log_dv(
+                    {
+                        "hypothesisId": "H3",
+                        "location": "main_window.py:_flush_dataviewer_open_widget_from_model",
+                        "message": "flush_exception",
+                        "data": {"hn": getattr(dv, "hash_name", ""), "exc": repr(exc)},
+                    }
+                )
+                # endregion agent log
                 continue
 
     def _open_live_dataviewer_dialog(self, dv: DataViewer) -> None:
         """Show or focus the Synarius DataViewer window for this model instance."""
+        # region agent log
+        _agent_debug_log_dv(
+            {
+                "hypothesisId": "H5",
+                "location": "main_window.py:_open_live_dataviewer_dialog",
+                "message": "open_enter",
+                "data": {"hn": getattr(dv, "hash_name", "")},
+            }
+        )
+        # endregion agent log
         try:
             vid = int(dv.get("dataviewer_id"))
-        except Exception:
+        except Exception as exc:
+            # region agent log
+            _agent_debug_log_dv(
+                {
+                    "hypothesisId": "H3",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "open_abort_bad_vid",
+                    "data": {"hn": getattr(dv, "hash_name", ""), "exc": repr(exc)},
+                }
+            )
+            # endregion agent log
             return
         if vid in self._live_dataviewers:
+            # region agent log
+            _agent_debug_log_dv(
+                {
+                    "hypothesisId": "H4",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "open_existing_dialog",
+                    "data": {"vid": vid},
+                }
+            )
+            # endregion agent log
             w = self._live_dataviewers[vid]
             w.show()
             w.raise_()
@@ -2454,6 +2564,16 @@ class MainWindow(QMainWindow):
         try:
             from synarius_dataviewer.widgets.data_viewer import DataViewerShell
         except Exception as exc:
+            # region agent log
+            _agent_debug_log_dv(
+                {
+                    "hypothesisId": "H3",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "open_import_fail",
+                    "data": {"vid": vid, "exc": repr(exc)},
+                }
+            )
+            # endregion agent log
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.warning(self, "Dataviewer", f"Dataviewer widget not available:\n{exc}")
@@ -2509,6 +2629,40 @@ class MainWindow(QMainWindow):
         dlg._dv_shell = shell  # type: ignore[attr-defined]
         dlg.resize(900, 480)
         dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+        def _bring_dataviewer_dialog_forward() -> None:
+            dlg.raise_()
+            dlg.activateWindow()
+
+        # Second pass after the event loop: new top-level dialogs often stay behind the main window on Windows.
+        QTimer.singleShot(0, _bring_dataviewer_dialog_forward)
+        # region agent log
+        try:
+            app = QApplication.instance()
+            _agent_debug_log_dv(
+                {
+                    "hypothesisId": "H4",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "open_new_dialog_after_show",
+                    "data": {
+                        "vid": vid,
+                        "dlg_visible": bool(dlg.isVisible()),
+                        "active": bool(app.activeWindow() is dlg) if app is not None else None,
+                    },
+                }
+            )
+        except Exception as exc:
+            _agent_debug_log_dv(
+                {
+                    "hypothesisId": "H4",
+                    "location": "main_window.py:_open_live_dataviewer_dialog",
+                    "message": "open_visibility_log_failed",
+                    "data": {"exc": repr(exc)},
+                }
+            )
+        # endregion agent log
 
     def _attach_canvas_runtime_actions_to_dynamic_dataviewer(self, shell: QWidget) -> None:
         """Append canvas Record/Play/Stop actions to dynamic DataViewer toolbar."""
