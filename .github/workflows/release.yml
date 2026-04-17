@@ -8,6 +8,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   PYINSTALLER_VERSION: "6.19.0"
+  # Sibling repos (file:../ in pyproject): use the same branch Studio development uses so
+  # tagged releases do not silently build against stale default-branch checkouts of core/apps.
+  SYNARIUS_SIBLING_BRANCH: dev
 
 jobs:
   build:
@@ -35,8 +38,8 @@ jobs:
           fi
           PARENT="$(dirname "${STUDIO_ROOT}")"
           cd "${PARENT}"
-          git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
-          git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
+          git clone --depth 1 -b "${SYNARIUS_SIBLING_BRANCH}" https://github.com/synarius-project/synarius-apps.git synarius-apps
+          git clone --depth 1 -b "${SYNARIUS_SIBLING_BRANCH}" https://github.com/synarius-project/synarius-core.git synarius-core
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -79,8 +82,8 @@ jobs:
           fi
           PARENT="$(dirname "${STUDIO_ROOT}")"
           cd "${PARENT}"
-          git clone --depth 1 https://github.com/synarius-project/synarius-apps.git synarius-apps
-          git clone --depth 1 https://github.com/synarius-project/synarius-core.git synarius-core
+          git clone --depth 1 -b "${SYNARIUS_SIBLING_BRANCH}" https://github.com/synarius-project/synarius-apps.git synarius-apps
+          git clone --depth 1 -b "${SYNARIUS_SIBLING_BRANCH}" https://github.com/synarius-project/synarius-core.git synarius-core
           # #region agent log
           echo "{\"sessionId\":\"3f66e7\",\"hypothesisId\":\"H4\",\"message\":\"windows resolve+clone\",\"data\":{\"studio_root\":\"${STUDIO_ROOT}\",\"parent\":\"${PARENT}\",\"prefix\":\"${PREFIX}\"}}"
           # #endregion
