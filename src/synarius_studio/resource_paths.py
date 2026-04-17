@@ -17,12 +17,26 @@ def bundle_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _studio_icons_dir() -> Path:
+    """Package ``icons`` directory (splash, toolbar SVGs).
+
+    Editable/dev: :func:`bundle_root` is the ``synarius_studio`` package dir → ``…/synarius_studio/icons``.
+
+    PyInstaller one-file: assets are under ``_MEIPASS/synarius_studio/icons`` (see ``synarius_studio.spec``),
+    not ``_MEIPASS/icons``.
+    """
+    root = bundle_root()
+    if is_frozen():
+        return root / "synarius_studio" / "icons"
+    return root / "icons"
+
+
 def studio_icon_path(name: str = "synarius64.png") -> Path:
-    return bundle_root() / "icons" / name
+    return _studio_icons_dir() / name
 
 
 def studio_splash_path(name: str = "splash.png") -> Path:
-    return bundle_root() / "icons" / name
+    return _studio_icons_dir() / name
 
 
 def prepend_dev_synarius_apps_src() -> bool:
