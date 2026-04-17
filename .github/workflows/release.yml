@@ -219,6 +219,13 @@ jobs:
                 <ComponentRef Id="BundledExampleModellingComponent" />
                 <ComponentRef Id="BundledExampleExperimentComponent" />
                 <ComponentRef Id="BundledExampleFmuComponent" />
+                <ComponentRef Id="BundledExampleLibVsCanvasAddComponent" />
+                <ComponentRef Id="BundledExampleMapsCurvesComponent" />
+                <ComponentRef Id="BundledKenngroessenNullenComponent" />
+                <ComponentRef Id="BundledKenngroessenPoly3Component" />
+                <ComponentRef Id="BundledMeasurementComponent" />
+                <ComponentRef Id="BundledMeasurement1Component" />
+                <ComponentRef Id="BundledMeasurement6Component" />
                 <ComponentRef Id="BundledBouncingBallFmuComponent" />
                 <ComponentRef Id="BundledBouncingBallLicenseComponent" />
                 <ComponentRef Id="BundledBouncingBallNoticesComponent" />
@@ -252,6 +259,27 @@ jobs:
                     </Component>
                     <Component Id="BundledExampleFmuComponent" Guid="*">
                       <File Id="BundledExampleFmuSyn" Source="src\synarius_studio\resources\example_fmu.syn" />
+                    </Component>
+                    <Component Id="BundledExampleLibVsCanvasAddComponent" Guid="*">
+                      <File Id="BundledExampleLibVsCanvasAddSyn" Source="src\synarius_studio\resources\example_lib_vs_canvas_add.syn" />
+                    </Component>
+                    <Component Id="BundledExampleMapsCurvesComponent" Guid="*">
+                      <File Id="BundledExampleMapsCurvesSyn" Source="src\synarius_studio\resources\example_maps_curves.syn" />
+                    </Component>
+                    <Component Id="BundledKenngroessenNullenComponent" Guid="*">
+                      <File Id="BundledKenngroessenNullenDcm" Source="src\synarius_studio\resources\kenngroessen_nullen.dcm" KeyPath="yes" />
+                    </Component>
+                    <Component Id="BundledKenngroessenPoly3Component" Guid="*">
+                      <File Id="BundledKenngroessenPoly3Dcm" Source="src\synarius_studio\resources\kenngroessen_poly3.dcm" KeyPath="yes" />
+                    </Component>
+                    <Component Id="BundledMeasurementComponent" Guid="*">
+                      <File Id="BundledMeasurementMf4" Source="src\synarius_studio\resources\measurement.mf4" KeyPath="yes" />
+                    </Component>
+                    <Component Id="BundledMeasurement1Component" Guid="*">
+                      <File Id="BundledMeasurement1Mf4" Source="src\synarius_studio\resources\measurement_1.mf4" KeyPath="yes" />
+                    </Component>
+                    <Component Id="BundledMeasurement6Component" Guid="*">
+                      <File Id="BundledMeasurement6Mf4" Source="src\synarius_studio\resources\measurement_6.mf4" KeyPath="yes" />
                     </Component>
                     <Directory Id="ThirdPartyDir" Name="third_party">
                       <Directory Id="BouncingBallDir" Name="bouncing_ball">

@@ -16,8 +16,12 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 _repo = Path(SPECPATH)
 _src_main = _repo / "src" / "synarius_studio" / "__main__.py"
 _icon_dir = _repo / "src" / "synarius_studio" / "icons"
+_resources_dir = _repo / "src" / "synarius_studio" / "resources"
 
-datas: list[tuple[str, str]] = [(str(_icon_dir), "synarius_studio/icons")]
+datas: list[tuple[str, str]] = [
+    (str(_icon_dir), "synarius_studio/icons"),
+    (str(_resources_dir), "synarius_studio/resources"),
+]
 binaries: list = []
 hiddenimports: list[str] = []
 
